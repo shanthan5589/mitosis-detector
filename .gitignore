@@ -1,4 +1,7 @@
-meta_data/ 
-__pycache__/ 
-.ipynb_checkpoints/ 
-*.pyc 
+meta_data/
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+experiments/
+*.pth
+clean_paths.txt
