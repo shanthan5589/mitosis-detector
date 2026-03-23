@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import time
 from datetime import datetime
-from config import BASE_DIR
+from config import TRAINING_DATA_DIR
 
 
 def main():
@@ -18,8 +18,8 @@ def main():
     history = []
 
     while True:
-        non_count = len(os.listdir(BASE_DIR / "non_mitotic"))
-        mit_count = len(os.listdir(BASE_DIR / "mitotic"))
+        non_count = len(os.listdir(TRAINING_DATA_DIR / "non_mitotic"))
+        mit_count = len(os.listdir(TRAINING_DATA_DIR / "mitotic"))
 
         total = non_count + mit_count
         speed = (non_count - prev_non) + (mit_count - prev_mit)

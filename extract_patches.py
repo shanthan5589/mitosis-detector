@@ -9,7 +9,7 @@ Usage:
 
 import pandas as pd
 import multiprocessing as mp
-from config import BASE_DIR, META_DATA_DIR, TRAINING_DATA_DIR
+from config import META_DATA_DIR, TRAINING_DATA_DIR
 from wsi_utils import process_slide
 
 
@@ -29,15 +29,14 @@ def main():
     # Group annotations by slide
     grouped_list = [(slide_id, group.copy()) for slide_id, group in df.groupby("slide_x")]
 
-    mp.set_start_method("spawn", force=True)
-
-    with mp.Pool(processes=6) as pool:
+    with mp.Pool(processes=2) as pool:
         pool.starmap(
             process_slide,
-            [(sid, grp, slide_to_path, BASE_DIR) for sid, grp in grouped_list]
+            [(sid, grp, slide_to_path, TRAINING_DATA_DIR) for sid, grp in grouped_list]
         )
     print("Extraction complete!")
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()

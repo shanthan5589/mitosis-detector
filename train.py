@@ -19,7 +19,7 @@ from pathlib import Path
 from collections import defaultdict
 import random
 
-from config import BASE_DIR, META_DATA_DIR, CLEAN_PATHS_FILE
+from config import TRAINING_DATA_DIR, META_DATA_DIR, CLEAN_PATHS_FILE
 
 
 # ──────────────────────────────────────────────
@@ -71,7 +71,7 @@ def load_clean_paths():
         for line in f:
             label, filename = line.strip().split(",")
             subdir = "mitotic" if label == "2" else "non_mitotic"
-            clean_paths[label].append(BASE_DIR / subdir / filename)
+            clean_paths[label].append(TRAINING_DATA_DIR / subdir / filename)
 
     for label in clean_paths:
         print(f"Class {label}: {len(clean_paths[label])}")

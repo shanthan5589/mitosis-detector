@@ -99,7 +99,7 @@ def extract_patch(dcm, processed_data, coord_x, coord_y, patch_size=64):
     return patch
 
 
-def process_slide(slide_id, group, slide_to_path, base_dir):
+def process_slide(slide_id, group, slide_to_path, output_root):
     """
     Processes one WSI slide: reads the DICOM file, iterates through tiles
     that contain annotated cells, extracts 64x64 patches around each annotation,
@@ -112,7 +112,7 @@ def process_slide(slide_id, group, slide_to_path, base_dir):
         slide_id:       integer slide identifier
         group:          DataFrame of annotations belonging to this slide
         slide_to_path:  dict mapping slide_id -> Path to DICOM file
-        base_dir:       Path to the project root directory
+        output_root:    Path to the directory containing mitotic/ and non_mitotic/
     """
 
     dcm_path = slide_to_path[slide_id]
@@ -185,7 +185,7 @@ def process_slide(slide_id, group, slide_to_path, base_dir):
             for _, row in tile_group.iterrows():
 
                 label_dir = 'mitotic' if row['agreedClass'] == 2 else 'non_mitotic'
-                output_path = base_dir / label_dir / f"{row['uid']}_{row['agreedClass']}.png"
+                output_path = output_root / label_dir / f"{row['uid']}_{row['agreedClass']}.png"
 
                 # Skip if already extracted (resumable)
                 if os.path.exists(output_path):
