@@ -2,11 +2,11 @@ import pydicom
 from pydicom.pixels import iter_pixels
 
 import numpy as np
-import pandas as pd
 import cv2
 
-from pathlib import Path
 import os
+
+from config import PATCH_SIZE
 
 
 def process_dicom_image(dcm, pixel_data):
@@ -36,7 +36,7 @@ def process_dicom_image(dcm, pixel_data):
     return pixel_data
 
 
-def extract_patch(dcm, processed_data, coord_x, coord_y, patch_size=64):
+def extract_patch(dcm, processed_data, coord_x, coord_y, patch_size=PATCH_SIZE):
     """
     Extracts a square patch centered on (coord_x, coord_y) from a processed tile.
     Coordinates are converted from slide-level to tile-local before extraction.
@@ -115,7 +115,7 @@ def process_slide(slide_id, group, slide_to_path, output_root):
         output_root:    Path to the directory containing mitotic/ and non_mitotic/
     """
 
-    dcm_path = slide_to_path[slide_id]
+    dcm_path = slide_to_path.get(slide_id)
 
     if dcm_path is None:
         print(f"Skipping slide {slide_id}: No DICOM path found.")
@@ -180,6 +180,10 @@ def process_slide(slide_id, group, slide_to_path, output_root):
 
             if pixel_data is None:
                 print(f"Slide {slide_id}: Skipping tile {tile_index} (no pixel data)")
+                current_target_idx += 1
+                if current_target_idx >= len(next_tile):
+                    break
+                tile_index = next_tile[current_target_idx]
                 continue
 
             for _, row in tile_group.iterrows():

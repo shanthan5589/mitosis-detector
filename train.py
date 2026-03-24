@@ -10,30 +10,34 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, models
+
+from sklearn.metrics import f1_score
 
 import cv2
-import numpy as np
 import pandas as pd
-from pathlib import Path
 from collections import defaultdict
-import random
 
 from config import TRAINING_DATA_DIR, META_DATA_DIR, CLEAN_PATHS_FILE
+
+from model_utils import (
+    build_model,
+    get_train_transform,
+    get_eval_transform,
+    BATCH_SIZE,
+    NUM_WORKERS,
+    PIN_MEMORY,
+)
 
 
 # ──────────────────────────────────────────────
 # Settings (edit these for different experiments)
 # ──────────────────────────────────────────────
 
-BATCH_SIZE = 64
 NUM_EPOCHS = 15
 LEARNING_RATE = 1e-4
-IMAGE_SIZE = 224
 
-TRAIN_SLIDES = [4, 7, 12, 13, 17, 15, 23, 25, 28, 29, 32, 34, 35, 36]
-VAL_SLIDES = [14, 8, 22, 24]
-TEST_SLIDES = [19, 21, 26]
+TRAIN_SLIDES =  [4, 12, 13, 15, 17, 19, 21, 22, 24, 25, 26, 28, 29, 32, 34, 35, 36]
+VAL_SLIDES = [7, 8, 14, 23]
 
 
 # ──────────────────────────────────────────────
@@ -52,6 +56,8 @@ class MitosisDataset(Dataset):
     def __getitem__(self, idx):
         path, label = self.file_list[idx]
         img = cv2.imread(str(path))
+        if img is None:
+            raise RuntimeError(f"Failed to load image: {path}. File may be missing or corrupted.")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         if self.transform:
@@ -91,53 +97,38 @@ def build_slide_splits(clean_paths):
     uid_to_slide = dict(zip(df_annots["uid"], df_annots["slide"]))
 
     slide_groups = defaultdict(list)
+    dropped = 0
     for path, label in mitotic + non_mitotic:
         uid = int(path.stem.split("_")[0])
         slide = uid_to_slide.get(uid)
         if slide is not None:
             slide_groups[slide].append((path, label))
+        else:
+            dropped += 1
+    if dropped:
+        print(f"Warning: {dropped} patches dropped (UID not found in Annotations.csv)")
 
-    train_data, val_data, test_data = [], [], []
+    train_data, val_data = [], []
 
     for slide in TRAIN_SLIDES:
         train_data.extend(slide_groups[slide])
     for slide in VAL_SLIDES:
         val_data.extend(slide_groups[slide])
-    for slide in TEST_SLIDES:
-        test_data.extend(slide_groups[slide])
 
-    for name, data in [("Train", train_data), ("Val", val_data), ("Test", test_data)]:
+    for name, data in [("Train", train_data), ("Val", val_data)]:
         mit = sum(1 for _, l in data if l == 1)
         non = sum(1 for _, l in data if l == 0)
         print(f"{name:5s} | Mitotic: {mit:5d} | Non-mitotic: {non:5d} | Total: {mit+non:5d}")
 
-    return train_data, val_data, test_data
+    return train_data, val_data
 
+def get_dataloaders(train_data, val_data):
 
-def get_dataloaders(train_data, val_data, test_data):
-    train_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.RandomRotation(90),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-
-    val_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-
-    random.shuffle(train_data)
+    train_transform = get_train_transform()
+    val_transform = get_eval_transform()
 
     train_dataset = MitosisDataset(train_data, transform=train_transform)
     val_dataset = MitosisDataset(val_data, transform=val_transform)
-    test_dataset = MitosisDataset(test_data, transform=val_transform)
 
     # Weighted sampler to handle class imbalance
     train_labels = [label for _, label in train_data]
@@ -145,11 +136,10 @@ def get_dataloaders(train_data, val_data, test_data):
     weights = [1.0 / class_counts[label] for label in train_labels]
     sampler = torch.utils.data.WeightedRandomSampler(weights, len(weights))
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
 
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader
 
 
 # ──────────────────────────────────────────────
@@ -167,7 +157,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
         labels = labels.float().to(device)
 
         optimizer.zero_grad()
-        outputs = model(images).squeeze()
+        outputs = model(images).squeeze(1)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
@@ -181,25 +171,27 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
 
 
 def evaluate(model, loader, criterion, device):
+
     model.eval()
     val_loss = 0.0
-    correct = 0
-    total = 0
+
+    all_preds = []
+    all_labels = []
 
     with torch.no_grad():
         for images, labels in loader:
             images = images.to(device)
             labels = labels.float().to(device)
 
-            outputs = model(images).squeeze()
+            outputs = model(images).squeeze(1)
             loss = criterion(outputs, labels)
 
             val_loss += loss.item()
             preds = (torch.sigmoid(outputs) > 0.5).long()
-            correct += (preds == labels.long()).sum().item()
-            total += labels.size(0)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().long().numpy())
 
-    return val_loss / len(loader), correct / total
+    return val_loss / len(loader), f1_score(all_labels, all_preds, pos_label=1)
 
 
 # ──────────────────────────────────────────────
@@ -212,26 +204,29 @@ def main():
 
     # Data
     clean_paths = load_clean_paths()
-    train_data, val_data, test_data = build_slide_splits(clean_paths)
-    train_loader, val_loader, test_loader = get_dataloaders(train_data, val_data, test_data)
+    train_data, val_data = build_slide_splits(clean_paths)
+    train_loader, val_loader = get_dataloaders(train_data, val_data)
 
     # Model
-    model = models.resnet18(pretrained=True)
-    model.fc = nn.Linear(512, 1)
+    model = build_model(pretrained=True)
     model = model.to(device)
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     # Train
+    best_val_f1 = 0.0
     for epoch in range(NUM_EPOCHS):
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.3f} | Val Loss: {val_loss:.4f} Acc: {val_acc:.3f}")
+        val_loss, val_f1 = evaluate(model, val_loader, criterion, device)
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.3f} | Val Loss: {val_loss:.4f} F1: {val_f1:.3f}")
 
-    # Save model
-    torch.save(model.state_dict(), "model.pth")
-    print("Model saved to model.pth")
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            torch.save(model.state_dict(), "model.pth")
+            print(f"  --> New best val F1: {best_val_f1:.3f} — model saved.")
+
+    print(f"Training complete. Best val F1: {best_val_f1:.3f}")
 
 
 if __name__ == "__main__":

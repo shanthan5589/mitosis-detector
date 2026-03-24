@@ -2,24 +2,32 @@
 Monitor extraction progress: Prints patch counts every minute.
 
 Usage:
-    python data_segregation_status.py
+    python data_segregation_status.py --split train
+    python data_segregation_status.py --split test
 """
 
+import argparse
 import os
-from pathlib import Path
 import time
 from datetime import datetime
-from config import TRAINING_DATA_DIR
+from config import TRAINING_DATA_DIR, TEST_DATA_DIR
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--split", choices=["train", "test"], required=True,
+                        help="Which split to monitor: train or test")
+    args = parser.parse_args()
+
+    data_dir = TRAINING_DATA_DIR if args.split == "train" else TEST_DATA_DIR
+
     prev_non = 0
     prev_mit = 0
     history = []
 
     while True:
-        non_count = len(os.listdir(TRAINING_DATA_DIR / "non_mitotic"))
-        mit_count = len(os.listdir(TRAINING_DATA_DIR / "mitotic"))
+        non_count = len(os.listdir(data_dir / "non_mitotic"))
+        mit_count = len(os.listdir(data_dir / "mitotic"))
 
         total = non_count + mit_count
         speed = (non_count - prev_non) + (mit_count - prev_mit)
