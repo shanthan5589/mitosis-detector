@@ -11,10 +11,10 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, confusion_matrix
+from pathlib import Path
 
 from config import TEST_DATA_DIR
 from train import MitosisDataset, load_clean_paths, build_slide_splits
-
 from model_utils import build_model, get_eval_transform, BATCH_SIZE, NUM_WORKERS, PIN_MEMORY
 
 def get_test_data():
@@ -70,7 +70,6 @@ def main():
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
 
     # Load model
-    from pathlib import Path
     model_path = Path("model.pth")
     if not model_path.exists():
         raise FileNotFoundError(

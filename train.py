@@ -17,32 +17,20 @@ import cv2
 import pandas as pd
 from collections import defaultdict
 
-from config import TRAINING_DATA_DIR, META_DATA_DIR, CLEAN_PATHS_FILE
+from config import TRAINING_DATA_DIR, TRAIN_META_DATA_DIR, CLEAN_PATHS_FILE
+
+from model_utils import TRAIN_SLIDES, VAL_SLIDES
 
 from model_utils import (
     build_model,
+    NUM_EPOCHS,
+    LEARNING_RATE,
+    BATCH_SIZE,
     get_train_transform,
     get_eval_transform,
-    BATCH_SIZE,
     NUM_WORKERS,
     PIN_MEMORY,
 )
-
-
-# ──────────────────────────────────────────────
-# Settings (edit these for different experiments)
-# ──────────────────────────────────────────────
-
-NUM_EPOCHS = 15
-LEARNING_RATE = 1e-4
-
-TRAIN_SLIDES =  [4, 12, 13, 15, 17, 19, 21, 22, 24, 25, 26, 28, 29, 32, 34, 35, 36]
-VAL_SLIDES = [7, 8, 14, 23]
-
-
-# ──────────────────────────────────────────────
-# Dataset
-# ──────────────────────────────────────────────
 
 class MitosisDataset(Dataset):
 
@@ -93,7 +81,7 @@ def build_slide_splits(clean_paths):
     print(f"Mitotic: {len(mitotic)}, Non-mitotic: {len(non_mitotic)}, Total: {len(mitotic) + len(non_mitotic)}")
 
     # Map uid -> slide using metadata
-    df_annots = pd.read_csv(META_DATA_DIR / "Annotations.csv")
+    df_annots = pd.read_csv(TRAIN_META_DATA_DIR / "Annotations.csv")
     uid_to_slide = dict(zip(df_annots["uid"], df_annots["slide"]))
 
     slide_groups = defaultdict(list)
@@ -177,6 +165,8 @@ def evaluate(model, loader, criterion, device):
 
     all_preds = []
     all_labels = []
+    correct = 0
+    total = 0
 
     with torch.no_grad():
         for images, labels in loader:
@@ -188,10 +178,15 @@ def evaluate(model, loader, criterion, device):
 
             val_loss += loss.item()
             preds = (torch.sigmoid(outputs) > 0.5).long()
+
+            correct += (preds == labels.long()).sum().item()
+            total += labels.size(0)
+            
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().long().numpy())
 
-    return val_loss / len(loader), f1_score(all_labels, all_preds, pos_label=1)
+    # Returns average val loss across all batches and average val accuracy across all validation examples.
+    return val_loss / len(loader), correct / total, f1_score(all_labels, all_preds, pos_label=1)
 
 
 # ──────────────────────────────────────────────
@@ -199,6 +194,7 @@ def evaluate(model, loader, criterion, device):
 # ──────────────────────────────────────────────
 
 def main():
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -213,13 +209,21 @@ def main():
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=1)
 
     # Train
     best_val_f1 = 0.0
+
     for epoch in range(NUM_EPOCHS):
+
+        current_lr = optimizer.param_groups[0]['lr']
+
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_f1 = evaluate(model, val_loader, criterion, device)
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Train Loss: {train_loss:.4f} Acc: {train_acc:.3f} | Val Loss: {val_loss:.4f} F1: {val_f1:.3f}")
+        val_loss, val_acc, val_f1 = evaluate(model, val_loader, criterion, device)
+
+        scheduler.step(val_f1)
+
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Used Learning Rate: {current_lr} | Train Loss: {train_loss:.4f} Acc: {train_acc:.3f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | F1: {val_f1:.3f}")
 
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1

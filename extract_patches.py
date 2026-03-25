@@ -11,8 +11,10 @@ Usage:
 import argparse
 import pandas as pd
 import multiprocessing as mp
-from config import META_DATA_DIR, TRAINING_DATA_DIR, TEST_META_DATA_DIR, TEST_DATA_DIR
+
+from config import TRAIN_META_DATA_DIR, TEST_META_DATA_DIR, TRAINING_DATA_DIR, TEST_DATA_DIR
 from wsi_utils import process_slide
+from model_utils import NUM_WORKERS
 
 
 def main():
@@ -22,7 +24,7 @@ def main():
     args = parser.parse_args()
 
     if args.split == "train":
-        meta_dir = META_DATA_DIR
+        meta_dir = TRAIN_META_DATA_DIR
         data_dir = TRAINING_DATA_DIR
     else:
         meta_dir = TEST_META_DATA_DIR
@@ -50,7 +52,7 @@ def main():
     # Group annotations by slide
     grouped_list = [(slide_id, group.copy()) for slide_id, group in df.groupby("slide_x")]
 
-    with mp.Pool(processes=2) as pool:
+    with mp.Pool(processes=NUM_WORKERS) as pool:
         pool.starmap(
             process_slide,
             [(sid, grp, slide_to_path, data_dir) for sid, grp in grouped_list]

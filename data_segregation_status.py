@@ -12,7 +12,6 @@ import time
 from datetime import datetime
 from config import TRAINING_DATA_DIR, TEST_DATA_DIR
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--split", choices=["train", "test"], required=True,

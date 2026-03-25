@@ -6,8 +6,10 @@ BASE_DIR = Path("D:/Mitosis WSI CCMCT")
 # Directories
 TRAINING_DATA_DIR = BASE_DIR / "training_data"
 TEST_DATA_DIR = BASE_DIR / "testing_data"
-META_DATA_DIR = TRAINING_DATA_DIR / "meta_data"
+
+TRAIN_META_DATA_DIR = TRAINING_DATA_DIR / "meta_data"
 TEST_META_DATA_DIR = TEST_DATA_DIR / "meta_data"
+
 MITOTIC_DIR = TRAINING_DATA_DIR / "mitotic"
 NON_MITOTIC_DIR = TRAINING_DATA_DIR / "non_mitotic"
 

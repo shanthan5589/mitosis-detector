@@ -11,8 +11,10 @@ import argparse
 import sqlite3
 import pandas as pd
 import os
-from config import (TRAINING_DATA_DIR, META_DATA_DIR, MITOTIC_DIR, NON_MITOTIC_DIR, TRAIN_DB_PATH,
-                    TEST_DATA_DIR, TEST_META_DATA_DIR, TEST_DB_PATH)
+from config import (TRAINING_DATA_DIR, TEST_DATA_DIR,  
+                    MITOTIC_DIR, NON_MITOTIC_DIR,
+                    TRAIN_META_DATA_DIR, TEST_META_DATA_DIR, 
+                    TRAIN_DB_PATH, TEST_DB_PATH)
 
 
 def main():
@@ -23,7 +25,7 @@ def main():
 
     if args.split == "train":
         data_dir = TRAINING_DATA_DIR
-        meta_dir = META_DATA_DIR
+        meta_dir = TRAIN_META_DATA_DIR
         mitotic_dir = MITOTIC_DIR
         non_mitotic_dir = NON_MITOTIC_DIR
         db_path = TRAIN_DB_PATH
