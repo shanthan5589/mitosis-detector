@@ -76,10 +76,13 @@ def main():
             "model.pth not found in current directory. "
             "Run train.py from this directory first."
         )
-    
+
     model = build_model(pretrained=False)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
     model = model.to(device)
+
+    best_thresh = checkpoint["best_thresh"]
 
     model.eval()
 
@@ -91,7 +94,7 @@ def main():
         for images, labels in loader:
             images = images.to(device)
             outputs = model(images).squeeze(1)
-            preds = (torch.sigmoid(outputs) > 0.5).long()
+            preds = (torch.sigmoid(outputs) > best_thresh).long()
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.numpy())
 

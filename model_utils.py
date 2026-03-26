@@ -16,9 +16,11 @@ TRAIN_SLIDES =  [4, 12, 13, 15, 17, 19, 21, 22, 24, 25, 26, 28, 29, 32, 34, 35, 
 VAL_SLIDES = [7, 8, 14, 23]
 
 def build_model(pretrained=True):
-    weights = models.ResNet18_Weights.DEFAULT if pretrained else None
-    model = models.resnet18(weights=weights)
-    model.fc = nn.Linear(512, 1)
+    weights = models.ResNet50_Weights.DEFAULT if pretrained else None
+    model = models.resnet50(weights=weights)
+    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+    model.maxpool = nn.Identity()
+    model.fc = nn.Linear(2048, 1)
     return model
 
 def get_train_transform():
@@ -29,7 +31,7 @@ def get_train_transform():
         transforms.RandomRotation(90),
         transforms.ColorJitter(brightness=0.2, contrast=0.2),
         transforms.ToTensor(),
-        transforms.Normlize(mean=MEAN, std=STD)
+        transforms.Normalize(mean=MEAN, std=STD)
     ])
 
 

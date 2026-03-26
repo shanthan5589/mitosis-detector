@@ -15,7 +15,7 @@ from sklearn.metrics import f1_score
 
 import cv2
 import pandas as pd
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from config import TRAINING_DATA_DIR, TRAIN_META_DATA_DIR, CLEAN_PATHS_FILE
 
@@ -103,6 +103,9 @@ def build_slide_splits(clean_paths):
     for slide in VAL_SLIDES:
         val_data.extend(slide_groups[slide])
 
+    if not train_data or not val_data:
+        raise ValueError("Train or val split is empty — check slide IDs and Annotations.csv")
+
     for name, data in [("Train", train_data), ("Val", val_data)]:
         mit = sum(1 for _, l in data if l == 1)
         non = sum(1 for _, l in data if l == 0)
@@ -119,12 +122,12 @@ def get_dataloaders(train_data, val_data):
     val_dataset = MitosisDataset(val_data, transform=val_transform)
 
     # Weighted sampler to handle class imbalance
-    train_labels = [label for _, label in train_data]
-    class_counts = [train_labels.count(0), train_labels.count(1)]
-    weights = [1.0 / class_counts[label] for label in train_labels]
-    sampler = torch.utils.data.WeightedRandomSampler(weights, len(weights))
+    # train_labels = [label for _, label in train_data]
+    # class_counts = [train_labels.count(0), train_labels.count(1)]
+    # weights = [1.0 / class_counts[label] for label in train_labels]
+    # sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples=len(weights))
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
 
     return train_loader, val_loader
@@ -161,32 +164,61 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
 def evaluate(model, loader, criterion, device):
 
     model.eval()
+
     val_loss = 0.0
 
-    all_preds = []
     all_labels = []
+    all_preds = []
+
     correct = 0
     total = 0
 
+    best_f1 = 0.0
+    best_thresh = 0.0
+
+    all_probs = []
+
     with torch.no_grad():
+
         for images, labels in loader:
+
             images = images.to(device)
             labels = labels.float().to(device)
 
             outputs = model(images).squeeze(1)
+
             loss = criterion(outputs, labels)
 
             val_loss += loss.item()
-            preds = (torch.sigmoid(outputs) > 0.5).long()
 
-            correct += (preds == labels.long()).sum().item()
+            probs = torch.sigmoid(outputs)
+
+            all_probs.extend(probs)           # Here probs is a tensor, but all_probs is still a list. A list doesn't become a tensor if it *contains tensors. It's still a list. 
+
+            preds = (probs > 0.5).cpu().long()
+            all_preds.extend(preds.numpy())
+
+            correct += (preds == labels.cpu().long()).sum().item()
             total += labels.size(0)
             
-            all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().long().numpy())
 
-    # Returns average val loss across all batches and average val accuracy across all validation examples.
-    return val_loss / len(loader), correct / total, f1_score(all_labels, all_preds, pos_label=1)
+        avg_batch_loss = val_loss / len(loader)  # average val loss across all batches.
+        val_accuracy = correct / total           # average val accuracy across all validation examples.
+        calc_f1 = f1_score(all_labels, all_preds, pos_label=1)  # f1 for thresh = 0.5 (fixed)
+
+        all_probs = torch.stack(all_probs)       # Since all_probs is a list we convert to tensor.
+
+        for thresh in [i/100 for i in range(5, 96, 2)]:
+            all_preds = (all_probs > thresh).cpu().long().numpy()
+            current_f1 = f1_score(all_labels, all_preds, pos_label=1)
+            if current_f1 > best_f1:
+                best_f1 = current_f1
+                best_thresh = thresh
+
+    # val_accuracy uses hardcoded 0.5 as threshold in its calculations.
+    # best_f1 is calculated on best found thresh value. (not a hardcoded 0.5 thresh)
+    return avg_batch_loss , val_accuracy, calc_f1, best_f1, best_thresh
 
 
 # ──────────────────────────────────────────────
@@ -207,9 +239,25 @@ def main():
     model = build_model(pretrained=True)
     model = model.to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
+    labels = []
+    for _, label in train_data:
+        labels.append(int(label))
+    
+    counter = Counter(labels)
+
+    mitotic = counter.get(1,0)
+    non_mitotic = counter.get(0,0)
+
+    if mitotic == 0:
+        raise ValueError("No positive samples found!")
+    
+    print(f"pos_weight: {non_mitotic / mitotic:.4f}")
+
+    pos_weight = torch.tensor([non_mitotic / mitotic]).to(device)
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=1)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=2)
 
     # Train
     best_val_f1 = 0.0
@@ -219,15 +267,21 @@ def main():
         current_lr = optimizer.param_groups[0]['lr']
 
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc, val_f1 = evaluate(model, val_loader, criterion, device)
+        val_loss, val_acc, curr_f1, val_f1, val_thresh = evaluate(model, val_loader, criterion, device)
 
-        scheduler.step(val_f1)
+        scheduler.step(val_loss)
 
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Used Learning Rate: {current_lr} | Train Loss: {train_loss:.4f} Acc: {train_acc:.3f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | F1: {val_f1:.3f}")
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Used Learning Rate: {current_lr} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.3f} || Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | curr_F1: {curr_f1} | best_F1: {val_f1:.3f} | Thresh: {val_thresh}")
 
         if val_f1 > best_val_f1:
+
             best_val_f1 = val_f1
-            torch.save(model.state_dict(), "model.pth")
+
+            torch.save({
+                "model_state": model.state_dict(),
+                "best_thresh": val_thresh
+            },  "model.pth")
+
             print(f"  --> New best val F1: {best_val_f1:.3f} — model saved.")
 
     print(f"Training complete. Best val F1: {best_val_f1:.3f}")
