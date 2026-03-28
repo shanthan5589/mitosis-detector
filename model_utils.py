@@ -2,7 +2,7 @@ import torch.nn as nn
 from torchvision import transforms, models
 
 IMAGE_SIZE = 128
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 NUM_WORKERS = 4
 PIN_MEMORY = True
 
