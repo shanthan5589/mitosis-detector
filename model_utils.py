@@ -1,7 +1,7 @@
 import torch.nn as nn
 from torchvision import transforms, models
 
-IMAGE_SIZE = None
+IMAGE_SIZE = 128
 BATCH_SIZE = 64
 NUM_WORKERS = 4
 PIN_MEMORY = True
@@ -26,6 +26,7 @@ def build_model(pretrained=True):
 def get_train_transform():
     return transforms.Compose([
         transforms.ToPILImage(),
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.RandomRotation(90),
@@ -38,6 +39,7 @@ def get_train_transform():
 def get_eval_transform():
     return transforms.Compose([
         transforms.ToPILImage(),
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor(),
         transforms.Normalize(mean=MEAN, std=STD)
     ])
