@@ -82,8 +82,6 @@ def main():
     model.load_state_dict(checkpoint["model_state"])
     model = model.to(device)
 
-    best_thresh = checkpoint["best_thresh"]
-
     model.eval()
 
     # Evaluate
@@ -94,7 +92,7 @@ def main():
         for images, labels in loader:
             images = images.to(device)
             outputs = model(images).squeeze(1)
-            preds = (torch.sigmoid(outputs) > best_thresh).long()
+            preds = (torch.sigmoid(outputs) > 0.5).long()
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.numpy())
 

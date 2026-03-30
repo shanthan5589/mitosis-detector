@@ -173,11 +173,6 @@ def evaluate(model, loader, criterion, device):
     correct = 0
     total = 0
 
-    best_f1 = 0.0
-    best_thresh = 0.0
-
-    all_probs = []
-
     with torch.no_grad():
 
         for images, labels in loader:
@@ -193,32 +188,19 @@ def evaluate(model, loader, criterion, device):
 
             probs = torch.sigmoid(outputs)
 
-            all_probs.extend(probs)           # Here probs is a tensor, but all_probs is still a list. A list doesn't become a tensor if it *contains tensors. It's still a list. 
-
             preds = (probs > 0.5).cpu().long()
             all_preds.extend(preds.numpy())
 
             correct += (preds == labels.cpu().long()).sum().item()
             total += labels.size(0)
-            
+
             all_labels.extend(labels.cpu().long().numpy())
 
-        avg_batch_loss = val_loss / len(loader)  # average val loss across all batches.
-        val_accuracy = correct / total           # average val accuracy across all validation examples.
-        calc_f1 = f1_score(all_labels, all_preds, pos_label=1)  # f1 for thresh = 0.5 (fixed)
+        avg_batch_loss = val_loss / len(loader)
+        val_accuracy = correct / total
+        val_f1 = f1_score(all_labels, all_preds, pos_label=1)
 
-        all_probs = torch.stack(all_probs)       # Since all_probs is a list we convert to tensor.
-
-        for thresh in [i/100 for i in range(5, 96, 2)]:
-            all_preds = (all_probs > thresh).cpu().long().numpy()
-            current_f1 = f1_score(all_labels, all_preds, pos_label=1)
-            if current_f1 > best_f1:
-                best_f1 = current_f1
-                best_thresh = thresh
-
-    # val_accuracy uses hardcoded 0.5 as threshold in its calculations.
-    # best_f1 is calculated on best found thresh value. (not a hardcoded 0.5 thresh)
-    return avg_batch_loss , val_accuracy, calc_f1, best_f1, best_thresh
+    return avg_batch_loss, val_accuracy, val_f1
 
 
 # ──────────────────────────────────────────────
@@ -257,7 +239,7 @@ def main():
 
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
 
     # Train
     best_val_f1 = 0.0
@@ -267,11 +249,11 @@ def main():
         current_lr = optimizer.param_groups[0]['lr']
 
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc, curr_f1, val_f1, val_thresh = evaluate(model, val_loader, criterion, device)
+        val_loss, val_acc, val_f1 = evaluate(model, val_loader, criterion, device)
 
         scheduler.step(val_loss)
 
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Used Learning Rate: {current_lr} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.3f} || Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | curr_F1: {curr_f1} | best_F1: {val_f1:.3f} | Thresh: {val_thresh}")
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | Used Learning Rate: {current_lr} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.3f} || Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1: {val_f1:.3f}")
 
         if val_f1 > best_val_f1:
 
@@ -279,7 +261,6 @@ def main():
 
             torch.save({
                 "model_state": model.state_dict(),
-                "best_thresh": val_thresh
             },  "model.pth")
 
             print(f"  --> New best val F1: {best_val_f1:.3f} — model saved.")
