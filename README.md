@@ -215,6 +215,15 @@ Per-slide breakdown across all 21 slides:
 
 Slide 23 (0 mitotic cells) was deliberately placed in the val set. A model that has genuinely learned what mitosis looks like should produce very few false positives on slide 23. If it doesn't, the model is pattern-matching noise, not learning the actual biology.
 
+## Model Architecture
+
+- ResNet18, pretrained (ImageNet)
+- Learning Rate: 1e-4
+- Optimizer: Adam
+- Loss: BCEWithLogitsLoss, pos_weight=3.12
+- LR Scheduler: ReduceLROnPlateau, mode=max, factor=0.5, patience=2, stepping on F1 score.
+- Classification Threshold: 0.51
+- Input Size: 224x224 (resized from 64×64)
 
 
 ## Why F1 is limited with a single classifier:
