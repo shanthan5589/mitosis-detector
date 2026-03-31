@@ -245,7 +245,7 @@ The techniques that I tried that I thought would work but they didn't:
 - Using Resnet-50
 - Using Efficient net B0
 
-The max F1 for the positive class I could achieve was ~0.439. 
+The max F1 for the positive class I could achieve was ~0.410. 
 Achieving a high F1 using a single classifier is tough because there is a lot of domain gap between training and validation slides i.e the staining varied a lot across training and validation slides so the model found it very hard to generalize the pattern of a mitotic cell, as a result the model was performing well on training data and worse on validation data.
 So it was clear for me that I cannot achieve a better F1 with only a single classifier.
 
