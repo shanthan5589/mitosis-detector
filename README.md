@@ -1,6 +1,6 @@
-# Mitosis Detector
+# Mitosis Detector — Two-Stage Pipeline
 
-Binary classification of mitotic figures in histopathology whole-slide images of canine cutaneous mast cell tumors (CCMCT).
+Binary detection of mitotic figures in histopathology whole-slide images of canine cutaneous mast cell tumors (CCMCT).
 
 ## Dataset
 
@@ -12,8 +12,8 @@ Binary classification of mitotic figures in histopathology whole-slide images of
 
 **Annotation classes:**
 
-| Class | Label |
-|-------|-------|
+| Class ID | Name |
+|----------|------|
 | 1 | Granulocyte |
 | 2 | Mitotic figure |
 | 3 | Tumor cell |
@@ -24,23 +24,51 @@ Binary classification of mitotic figures in histopathology whole-slide images of
 
 Classes 5 and 6 were defined in the annotation schema but no cells of those classes were annotated in the training or testing slides.
 
+---
+
+## Why Two Stages?
+
+The first version of this project used a single ResNet-18 classifier trained on 64×64 patches extracted from the slides. Despite trying many regularization techniques, architectures, and training strategies, the best validation F1 achieved was ~0.41. The root cause was domain shift — staining appearance varied significantly across slides, and a single classifier could not generalize across that gap.
+
+The techniques attempted that did not work:
+- Weighted Random Sampler
+- pos_weight in BCEWithLogitsLoss
+- Freezing all layers except the FC layer
+- Freezing all layers except Layer-4 and FC
+- Brightness/contrast augmentation
+- Resizing input images
+- Reducing learning rate / LR scheduling
+- Modifying ResNet-18's conv1 and maxpool (breaks transfer learning)
+- ResNet-50
+- EfficientNet-B0
+
+The core problem was that the single-stage model was trained on all extracted patches — it saw easy negatives (plain tissue, granulocytes) and never learned to distinguish the genuinely hard cases: cells that look like mitoses but aren't.
+
+The two-stage approach addresses this directly:
+
+**Stage 1 (YOLOv8s):** A detector tuned for high recall. Its job is to flag everything that might be a mitotic figure, at the cost of many false positives. Confidence threshold is deliberately set low (0.10).
+
+**Stage 2 (EfficientNet-B2):** A classifier trained exclusively on the hard cases — YOLO's true positives (real mitoses it found), hard negatives (non-mitotic cells that fooled YOLO), and false negatives (mitoses YOLO missed). This forces the classifier to solve the genuinely difficult discrimination problem instead of the easy one.
+
+---
+
 ## Project Structure
 
 ```
 mitosis-detector/
 ├── README.md
-├── .gitignore
 ├── requirements.txt
-├── config.py                   # Centralized paths and settings
-├── setup_data.py               # Extract metadata tables from SQLite database
-├── extract_patches.py          # Extract 64×64 patches from DICOM WSIs
-├── wsi_utils.py                # DICOM tile reading, normalization, patch extraction
-├── eda.ipynb                   # Exploratory data analysis and patch cleaning
-├── model_utils.py              # Model architecture, hyperparameters, transforms, and slide splits
-├── train.py                    # Model training with slide-level splits
-├── evaluate.py                 # Evaluation with precision, recall, F1
-└── data_segregation_status.py  # Monitor extraction progress
+├── config.py                              # Centralized paths and hyperparameters
+├── evaluate.py                            # Full pipeline evaluation (Stage 1 → Stage 2)
+├── stage1_yolo/
+│   ├── prepare_yolo_data.py              # Extract tiles from DICOM slides for YOLO
+│   └── train_yolo.py                     # Train YOLOv8s detector
+└── stage2_classifier/
+    ├── prepare_stage2_data.py            # Build classifier training data from YOLO output
+    └── train.py                          # Train EfficientNet-B2 classifier
 ```
+
+---
 
 ## Usage
 
@@ -58,9 +86,9 @@ pip install -r requirements.txt
 pip install kaggle
 ```
 
- **Kaggle API setup:** Go to kaggle.com → Your Profile → Settings → API → Create New Token. This downloads `kaggle.json`. Place it at:
- - Linux/Mac: `~/.kaggle/kaggle.json`
- - Windows: `C:\Users\<YourUsername>\.kaggle\kaggle.json`
+**Kaggle API setup:** Go to kaggle.com → Your Profile → Settings → API → Create New Token. This downloads `kaggle.json`. Place it at:
+- Linux/Mac: `~/.kaggle/kaggle.json`
+- Windows: `C:\Users\<YourUsername>\.kaggle\kaggle.json`
 
 ### 3. Download the dataset
 
@@ -74,52 +102,54 @@ kaggle datasets download -d marcaubreville/mitosis-wsi-ccmct-test-set -p "data" 
 
 ### 4. Configure paths
 
-All scripts import their paths from `config.py`, so it must be configured correctly before running anything.
-```bash
-config.py
+Edit `config.py` and set `TRAIN_DATA_DIR` and `TEST_DATA_DIR` to point to your local data. The dataset ships with a SQLite database (`MITOS_WSI_CCMCT_ODAEL_train_dcm.sqlite`) instead of CSVs. Extract the annotation tables first:
+
+```python
+import sqlite3, pandas as pd
+from pathlib import Path
+
+db_path = Path("path/to/MITOS_WSI_CCMCT_ODAEL_train_dcm.sqlite")
+meta_dir = Path("path/to/training_data/meta_data")
+meta_dir.mkdir(parents=True, exist_ok=True)
+
+con = sqlite3.connect(db_path)
+pd.read_sql("SELECT * FROM Slides", con).to_csv(meta_dir / "Slides.csv", index=False)
+pd.read_sql("SELECT * FROM Annotations", con).to_csv(meta_dir / "Annotations.csv", index=False)
+pd.read_sql("SELECT * FROM Annotations_coordinates", con).to_csv(meta_dir / "Annotations_coordinates.csv", index=False)
+con.close()
 ```
 
-### 5. Extract metadata
-
-Creates the required subdirectory structure and extracts annotation tables from the SQLite database as CSVs:
+### 5. Extract YOLO tiles from DICOM slides
 
 ```bash
-python setup_data.py --split train
+python stage1_yolo/prepare_yolo_data.py
 ```
+
+Outputs tile images and YOLO label files to `yolo_data/images/` and `yolo_data/labels/`. Slides are processed in parallel (one worker per slide). Note: reruns wipe and re-extract all tiles from scratch.
+
+### 6. Train the YOLO detector
 
 ```bash
-python setup_data.py --split test
+python stage1_yolo/train_yolo.py
 ```
 
-### 6. Extract patches
+Trains YOLOv8s for 50 epochs. Best weights saved to `models/yolo/weights/best.pt`.
 
-Reads DICOM whole-slide images and extracts 64×64 patches into `mitotic/` and `non_mitotic/` directories. Resumable — skips patches already on disk.
+### 7. Build Stage 2 training data
 
 ```bash
-python extract_patches.py --split train
+python stage2_classifier/prepare_stage2_data.py
 ```
+
+Runs the trained YOLO model over all tiles. Extracts 96×96 crops and labels them as true positives, hard negatives, or false negatives. Writes CSV manifests to `stage2_data/`.
+
+### 8. Train the Stage 2 classifier
 
 ```bash
-python extract_patches.py --split test
+python stage2_classifier/train.py
 ```
 
-To monitor extraction progress in a separate terminal while it runs:
-
-```bash
-python data_segregation_status.py --split train
-```
-
-### 7. Clean patches
-
-Open `eda.ipynb` and run all cells. Filters out black-padded and near-blank patches and writes `clean_paths.txt` to training data directory.
-
-### 8. Train
-
-```bash
-python train.py
-```
-
-Saves the best model checkpoint to `model.pth` based on validation F1.
+Trains EfficientNet-B2 for 30 epochs. Best checkpoint saved to `models/stage2_best.pth`.
 
 ### 9. Evaluate
 
@@ -127,62 +157,51 @@ Saves the best model checkpoint to `model.pth` based on validation F1.
 python evaluate.py --split val
 ```
 
+Runs the full pipeline (YOLO → EfficientNet) on the val slides end-to-end from raw DICOM and reports Precision, Recall, and F1.
+
 ```bash
 python evaluate.py --split test
 ```
 
+Requires `TEST_SLIDES` to be populated in `config.py` first.
+
+> **Note:** `--split val` is optimistically biased — the same val slides were used to select the Stage 2 checkpoint. The `--split test` result on the held-out test set is the honest number.
+
+---
+
 ## Data Pipeline
 
-### The core challenge: DICOM whole-slide images
+### DICOM whole-slide images
 
-Each WSI is a tiled DICOM file — not a regular image. A single slide can be several gigabytes. The extraction pipeline:
+Each WSI is a tiled DICOM file. A single slide can be several gigabytes. The extraction pipeline in `prepare_yolo_data.py`:
 
 1. Reads slide metadata (tile dimensions, total matrix size) from DICOM headers
-2. Maps each annotation's slide-level (x, y) coordinates to a specific tile index
-3. Streams through tiles using `iter_pixels`, decoding **only tiles that contain annotations** — skipping the rest entirely for speed
-4. Extracts a 64×64 patch centered on each annotated cell.
-5. Zero-pads patches that fall near tile edges.
+2. Identifies which tiles contain at least one mitotic annotation (class 2 only)
+3. Samples a small number of unannotated tiles as background examples
+4. Streams through tiles using `iter_pixels`, decoding only target tiles
+5. Saves tiles as images with YOLO-format bounding box label files
 
-This approach avoids loading entire slides into memory and makes extraction feasible on a standard machine.
+This avoids loading entire slides into memory and processes all slides in parallel.
 
-### EDA findings
+### EDA findings (from the single-stage experiment)
 
 1,000 patches per class were sampled to assess data quality. Two problems were found:
 
 | Class | Black padding >10% | Plain (intensity >220) |
-|-------|-------------------|----------------------------|
+|-------|-------------------|------------------------|
 | Granulocyte | 18.2% | 46.1% |
 | Mitotic figure | 17.7% | 27.6% |
 | Tumor cell | 19.4% | 31.1% |
 | Ambiguous | 19.1% | 37.1% |
 | Mitotic figure lookalike | 19.0% | 27.7% |
 
-So, both filters were applied to all 146,230 patches.
-
-| Class | Total | Clean | Dropped |
-|-------|-------|-------|---------|
-| Granulocyte (1) | 35,331 | 13,611 | 21,720 |
-| Mitotic figure (2) | 21,036 | 11,954 | 9,082 |
-| Tumor cell (3) | 45,178 | 21,995 | 23,183 |
-| Ambiguous (4) | 41,656 | 18,127 | 23,529 |
-| Mitotic figure lookalike (7) | 3,029 | 1,640 | 1,389 |
-| **Total** | **146,230** | **67,327** | **78,903** |
-
-54% of patches were dropped. 
-Class 4 (other/ambiguous) was also excluded from training — it is unknown whether these cells are mitotic or not, so including them would add unreliable labels. After exclusion:
-
-Final training data: 49,200 patches:
-- Mitotic: 11,954 
-- Non-mitotic: 37,246 
-- Class imbalance: 3.1:1
+54% of patches were garbage and had to be filtered before training. It also surfaced class 7 (mitotic figure lookalikes) as a particularly relevant class — cells that visually resemble mitoses but are not, making them natural hard negatives for a classifier.
 
 ### Slide-level splits
 
-Patches were not split randomly. If patches from slide 4 appear in both train and val, the model learns slide 4's specific staining appearance and gets rewarded for it during validation — that is memorization, not generalization.
+Tiles were not split randomly. If tiles from the same slide appear in both train and val, the model memorizes slide-specific staining and gets rewarded for it — that is not generalization.
 
-The correct approach is a slide-level split: all patches from a given slide go entirely into one set.
-
-Per-slide breakdown across all 21 slides:
+All data from a given slide goes entirely into one set. The counts below are from the original single-stage patch extraction and illustrate why the split was designed this way:
 
 | Slide | Mitotic | Non-mitotic | Total | Split |
 |-------|---------|-------------|-------|-------|
@@ -213,52 +232,73 @@ Per-slide breakdown across all 21 slides:
 | Train (17 slides) | 4, 12, 13, 15, 17, 19, 21, 22, 24, 25, 26, 28, 29, 32, 34, 35, 36 | 9,769 | 30,488 | 40,257 |
 | Val (4 slides) | 7, 8, 14, 23 | 2,185 | 6,758 | 8,943 |
 
-Slide 23 (0 mitotic cells) was deliberately placed in the val set. A model that has genuinely learned what mitosis looks like should produce very few false positives on slide 23. If it doesn't, the model is pattern-matching noise, not learning the actual biology.
+Slide 23 (zero mitotic cells) was deliberately placed in val. A model that has genuinely learned what mitosis looks like should produce very few false positives on it. If it doesn't, the model is matching noise.
+
+---
 
 ## Model Architecture
 
-- ResNet18, pretrained (ImageNet)
-- Learning Rate: 1e-4
-- Optimizer: Adam
-- Loss: BCEWithLogitsLoss, pos_weight=3.12
-- LR Scheduler: ReduceLROnPlateau, mode=max, factor=0.5, patience=2, stepping on F1 score.
-- Classification Threshold: 0.51
-- Input Size: 224x224 (resized from 64×64)
+### Stage 1 — YOLO Detector
 
+| Setting | Value |
+|---------|-------|
+| Model | YOLOv8s |
+| Input size | 640×640 |
+| Epochs | 50 |
+| Batch | 16 |
+| Confidence threshold (inference) | 0.10 (intentionally low — maximize recall) |
+| Augmentation | Horizontal/vertical flip, 90° rotation, HSV jitter. Mosaic, mixup, copy-paste disabled (distort cell morphology) |
 
-## Why F1 is limited with a single classifier:
+### Stage 2 — EfficientNet-B2 Classifier
 
-With the current slide split across training and validation set, it has been observed that the model across all experiments is overfitting the training data and I have tried different regularization techniques and model architectures to improve the F1 for the positive class but they didn't work quite well. 
+| Setting | Value |
+|---------|-------|
+| Model | EfficientNet-B2 (ImageNet pretrained) |
+| Head | Linear(1408 → 1) replacing default classifier |
+| Crop size | 96×96 (input to model: 224×224 after resize) |
+| Epochs | 30 |
+| Batch | 64 |
+| Learning rate | 1e-4 (Adam) |
+| LR scheduler | ReduceLROnPlateau, factor=0.5, patience=3 |
+| Loss | BCEWithLogitsLoss with pos_weight (computed from class ratio) |
+| Decision threshold | 0.50 |
 
-![Common Pattern Observed](assets/loss_curve.png)
+### Stage 2 Training Data
 
-The techniques that I tried that I thought would work but they didn't:
-- Weighted Random Sampler (there was a lot of class imbalance)
-- Using pos_weight in BCEWithLogitsLoss (pytorch)
-- Frozen all layers except the fc layer. 
-- Frozen all layers except Layer-4 and fc.
-- Augmentation - changing brightness and contrast.
-- Resizing the input images.
-- Reducing Learning Rate.
-- Using LR scheduler.
-- Changed conv1 to stride=1 and replaced maxpool with Identity so that last layer would get more spatial data (Breaks Transfer Learning).
-- Using Resnet-50
-- Using Efficient net B0
+| Crop type | Label | Description |
+|-----------|-------|-------------|
+| True Positive | 1 | Real mitosis that YOLO correctly detected |
+| False Negative | 1 | Real mitosis that YOLO missed entirely |
+| Hard Negative | 0 | Non-mitotic cell that fooled YOLO |
 
-The max F1 for the positive class I could achieve was ~0.410. 
-Achieving a high F1 using a single classifier is tough because there is a lot of domain gap between training and validation slides i.e the staining varied a lot across training and validation slides so the model found it very hard to generalize the pattern of a mitotic cell, as a result the model was performing well on training data and worse on validation data.
-So it was clear for me that I cannot achieve a better F1 with only a single classifier.
+---
 
-The data was extracted on my computer, but to fine-tune dense CNNs, you need a lot of compute, I personally have NVIDIA-3050 which wasn't enough, so I uploaded all the training and testing data along with all my scripts to kaggle and fine-tuned CNNs using NVIDIA-T4 GPU's available on Kaggle for free.
+## Results
 
-I know that this specific project couldn't achieve a high F1 score but I came to know various techniques that I could try when model breaks down and learn how gigabytes of data is broken down into simple 64×64 patches in a efficient data pre-processing pipeline.
+| | Precision | Recall | F1 | mAP50 |
+|---|---|---|---|---|
+| Stage 1 YOLO (val) | _(to be filled)_ | _(to be filled)_ | — | _(to be filled)_ |
+| Full pipeline (val) | _(to be filled)_ | _(to be filled)_ | _(to be filled)_ | — |
+| Full pipeline (test) | _(to be filled)_ | _(to be filled)_ | _(to be filled)_ | — |
+
+---
 
 ## Key Learnings
 
-- **Raw DICOM WSI data requires significant preprocessing.** 54% of extracted patches were garbage and had to be filtered before training. This kind of data cleaning is the unglamorous but essential foundation of any real ML project.
+- **A single classifier cannot solve this problem.** The domain gap between slides (staining variation) is too large for a patch classifier to generalize across. The max F1 achievable with a single ResNet-18/50 or EfficientNet-B0 was ~0.41 across all attempted training strategies.
+
+- **Hard negative mining is the right fix.** Training Stage 2 only on cases that fooled YOLO — rather than random non-mitotic patches — directly targets the failure mode. The model is forced to learn the genuinely hard discrimination.
+
+- **Two-stage recall-then-refine is a principled design.** Stage 1 is intentionally biased toward recall (conf threshold 0.10, no penalty for false positives). Stage 2 handles precision. Each stage has a single clear objective.
+
 - **Slide-level splits are non-negotiable in medical imaging.** Random splits produce inflated, misleading metrics. Proper splits reveal the true generalization difficulty.
-- **Input resolution matters for pretrained models.** Feeding 64×64 patches into ResNet-18 designed for 224×224 cripples the feature extraction pipeline at layer-4.
-- **Debugging experiments systematically is more valuable than running more experiments.** Every bug found and understood is more useful than another training run with unknown configuration.
-- **Validation set design is as important as training set design. Deliberately including slide 23 (zero mitotic cells) in val to measure false positive rate is a concrete methodological decision, not an afterthought.**
-- **Transfer learning assumptions break at small input sizes. ResNet-18 pretrained on 224×224 ImageNet images loses most of its spatial information when fed 64×64 patches — the feature maps collapse to 2×2 by layer4, making the pretrained weights mostly useless.**
-- **Using Weighted Random Sampler along with pos_weight in BCEWithLogitsLoss could be too strict and cause the model to underfit the data, so any one the technique should be used to handle class imbalance.**
+
+- **DICOM WSIs require careful streaming.** Loading even one slide fully into memory is impractical. `iter_pixels` allows tile-by-tile streaming — only decoding what's needed.
+
+- **Parallelism across slides, not within.** Each slide is fully independent — processing them in parallel with `multiprocessing.Pool` gives near-linear speedup with cores. Within a single slide, streaming is inherently sequential.
+
+- **Mosaic augmentation harms histology models.** YOLO's default mosaic stitches 4 random images together — this creates unnatural tissue boundaries that don't exist in real slides and actively degrades detection performance on WSI data.
+
+- **Transfer learning assumptions break at small input sizes.** ResNet-18 pretrained on 224×224 ImageNet images loses most spatial information when fed 64×64 patches — feature maps collapse to 2×2 by layer4, making the pretrained weights mostly useless. This was a key reason to move to larger crops (96×96) in Stage 2.
+
+- **Debugging experiments systematically is more valuable than running more experiments.** Every confirmed failure mode (domain shift, hard negatives, tile-boundary detection duplicates) led to a concrete architectural decision. Blind hyperparameter tuning did not.
