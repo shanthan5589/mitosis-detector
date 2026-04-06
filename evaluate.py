@@ -111,7 +111,8 @@ def run_stage2(model, crops_bgr: list[np.ndarray], device: torch.device) -> list
 
     batch  = torch.stack(tensors).to(device)
     with torch.no_grad():
-        scores = torch.sigmoid(model(batch)).cpu().squeeze(1).tolist()
+        with torch.amp.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            scores = torch.sigmoid(model(batch)).float().cpu().squeeze(1).tolist()
     return scores
 
 
@@ -187,68 +188,80 @@ def evaluate_slide(
     tiles_per_row = math.ceil(slide_w / tile_w)
 
     all_detections = []  # (slide_x, slide_y, score) for every surviving detection
+    YOLO_BATCH = 8
+    tiles = enumerate(iter_pixels(dcm))
 
-    for tile_i, frame in enumerate(iter_pixels(dcm)):
-        pixel_data = normalize_tile(frame)
-        img_bgr    = cv2.cvtColor(pixel_data, cv2.COLOR_RGB2BGR)
+    while True:
+        # ── Fill a batch of tiles ─────────────────────────────────────────
+        tile_buffer = []
+        for _ in range(YOLO_BATCH):
+            try:
+                tile_i, frame = next(tiles)
+            except StopIteration:
+                break
+            pixel_data = normalize_tile(frame)
+            img_bgr    = cv2.cvtColor(pixel_data, cv2.COLOR_RGB2BGR)
+            tile_buffer.append((tile_i, img_bgr))
 
-        # ── Stage 1: YOLO ─────────────────────────────────────────────────
-        results = yolo_model(img_bgr, conf=YOLO_CONF_THRESH, verbose=False)
-        candidate_boxes = []
-        for result in results:
-            if result.boxes is None:
+        if not tile_buffer:
+            break
+
+        # ── Stage 1: YOLO (batched) ──────────────────────────────────────
+        images = [img for _, img in tile_buffer]
+        batch_results = yolo_model(images, conf=YOLO_CONF_THRESH, verbose=False)
+
+        for (ti, img_bgr), result in zip(tile_buffer, batch_results):
+            candidate_boxes = []
+            if result.boxes is not None:
+                for box in result.boxes.xyxy.cpu().numpy():
+                    candidate_boxes.append(box[:4])
+
+            if not candidate_boxes:
                 continue
-            for box in result.boxes.xyxy.cpu().numpy():
-                candidate_boxes.append(box[:4])
 
-        if not candidate_boxes:
-            continue
+            # ── Stage 2: EfficientNet on each candidate crop ─────────────
+            crops = []
+            for box in candidate_boxes:
+                cx = (box[0] + box[2]) / 2
+                cy = (box[1] + box[3]) / 2
+                crops.append(extract_crop(img_bgr, cx, cy, STAGE2_CROP_SIZE))
 
-        # ── Stage 2: EfficientNet on each candidate crop ──────────────────
-        # extract_crop uses zero-padding at tile edges, matching training-data
-        # preparation in prepare_stage2_data.py exactly.
-        crops = []
-        for box in candidate_boxes:
-            cx = (box[0] + box[2]) / 2
-            cy = (box[1] + box[3]) / 2
-            crops.append(extract_crop(img_bgr, cx, cy, STAGE2_CROP_SIZE))
+            scores = run_stage2(stage2_model, crops, device)
 
-        scores = run_stage2(stage2_model, crops, device)
+            # ── NMS: suppress duplicate boxes around the same mitosis ────
+            passing = [(box, s) for box, s in zip(candidate_boxes, scores)
+                       if s >= STAGE2_CONF_THRESH]
+            if passing:
+                pass_boxes  = torch.as_tensor(np.array([b for b, _ in passing]), dtype=torch.float32).to(device)
+                pass_scores = torch.tensor([s for _, s in passing], dtype=torch.float32, device=device)
+                keep        = nms(pass_boxes, pass_scores, iou_threshold=0.3)
+                passing     = [passing[i] for i in keep.tolist()]
+            candidate_boxes = [b for b, _ in passing]
+            scores          = [s for _, s in passing]
 
-        # ── NMS: suppress duplicate boxes around the same mitosis ─────────
-        passing = [(box, s) for box, s in zip(candidate_boxes, scores)
-                   if s >= STAGE2_CONF_THRESH]
-        if passing:
-            pass_boxes  = torch.tensor([b for b, _ in passing], dtype=torch.float32)
-            pass_scores = torch.tensor([s for _, s in passing], dtype=torch.float32)
-            keep        = nms(pass_boxes, pass_scores, iou_threshold=0.3)
-            passing     = [passing[i] for i in keep.tolist()]
-        candidate_boxes = [b for b, _ in passing]
-        scores          = [s for _, s in passing]
+            # ── Convert surviving detections to slide coordinates ─────────
+            tile_col    = ti % tiles_per_row
+            tile_row    = ti // tiles_per_row
+            tile_origin_x = tile_col * tile_w
+            tile_origin_y = tile_row * tile_h
 
-        # ── Convert surviving detections to slide coordinates ─────────────
-        tile_col    = tile_i % tiles_per_row
-        tile_row    = tile_i // tiles_per_row
-        tile_origin_x = tile_col * tile_w
-        tile_origin_y = tile_row * tile_h
-
-        for box, score in zip(candidate_boxes, scores):
-            cx_tile = (box[0] + box[2]) / 2
-            cy_tile = (box[1] + box[3]) / 2
-            slide_x = tile_origin_x + cx_tile
-            slide_y = tile_origin_y + cy_tile
-            all_detections.append((slide_x, slide_y, score))
+            for box, score in zip(candidate_boxes, scores):
+                cx_tile = (box[0] + box[2]) / 2
+                cy_tile = (box[1] + box[3]) / 2
+                slide_x = tile_origin_x + cx_tile
+                slide_y = tile_origin_y + cy_tile
+                all_detections.append((slide_x, slide_y, score))
 
     # ── Slide-level NMS: suppress cross-tile duplicates at tile boundaries ──
     # A mitosis near a tile edge can be detected in two adjacent tiles.
     # Tile-local NMS cannot catch these; one final NMS pass in slide coords can.
     if len(all_detections) > 1:
         half = BOX_SIZE / 2
-        sl_boxes  = torch.tensor(
-            [[x - half, y - half, x + half, y + half] for x, y, _ in all_detections],
+        sl_boxes  = torch.as_tensor(
+            np.array([[x - half, y - half, x + half, y + half] for x, y, _ in all_detections]),
             dtype=torch.float32,
-        )
-        sl_scores = torch.tensor([s for _, _, s in all_detections], dtype=torch.float32)
+        ).to(device)
+        sl_scores = torch.tensor([s for _, _, s in all_detections], dtype=torch.float32, device=device)
         keep = nms(sl_boxes, sl_scores, iou_threshold=0.3)
         all_detections = [all_detections[i] for i in keep.tolist()]
 
@@ -256,6 +269,12 @@ def evaluate_slide(
     dist_thresh = BOX_SIZE / 2   # 32 pixels by default
     det_points  = [(x, y) for x, y, _ in all_detections]
     tp, fp, fn  = match_detections_to_gt(det_points, gt_points, dist_thresh)
+
+    if Path("test_predictions.txt").exists():
+        with open("test_predictions.txt", "a") as f:
+            for x, y, s in all_detections:
+                f.write(f"{slide_id},{x:.1f},{y:.1f},{s:.4f}\n")
+
     return tp, fp, fn
 
 
@@ -289,7 +308,7 @@ def main() -> None:
         eval_slides = TEST_SLIDES
         data_dir    = TEST_DATA_DIR
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     print(f"Split:  {args.split} ({len(eval_slides)} slides)\n")
 
@@ -301,6 +320,7 @@ def main() -> None:
             raise FileNotFoundError(f"Weights not found: {p}")
 
     yolo_model   = YOLO(str(yolo_weights))
+    yolo_model.to(str(device))
     stage2_model = load_stage2_model(stage2_weights, device)
     print("Both models loaded.\n")
 
@@ -332,6 +352,10 @@ def main() -> None:
 
     # ── Evaluate each slide ───────────────────────────────────────────────
     total_tp = total_fp = total_fn = 0
+
+    if args.split == "test":
+        with open("test_predictions.txt", "w") as f:
+            f.write("slide_id,x,y,score\n")
 
     for slide_id in eval_slides:
         dcm_path = slide_to_path[slide_id]

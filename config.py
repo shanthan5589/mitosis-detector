@@ -21,7 +21,7 @@ TRAIN_SLIDES = [4, 12, 13, 15, 17, 19, 21, 22, 24, 25, 26, 28, 29, 32, 34, 35, 3
 VAL_SLIDES   = [7, 8, 14, 23]
 # Held-out slides for final pipeline evaluation — must NOT overlap VAL_SLIDES.
 # Populate with slide IDs from TEST_DATA_DIR before running evaluate.py --split test.
-TEST_SLIDES: list[int] = []
+TEST_SLIDES: list[int] = [1, 2, 3, 6, 9, 11, 18, 20, 27, 30, 31]
 
 # ---------------------------------------------------------------------------
 # Stage 1 — YOLO data preparation
@@ -59,6 +59,6 @@ STAGE2_CROP_SIZE = 96
 # ---------------------------------------------------------------------------
 STAGE2_IMG_SIZE  = 224    # resize every crop to this before feeding EfficientNet
 STAGE2_EPOCHS    = 30
-STAGE2_BATCH     = 64
+STAGE2_BATCH     = 128
 STAGE2_LR        = 1e-4
 STAGE2_CONF_THRESH = 0.50 # final decision threshold for Stage 2 output

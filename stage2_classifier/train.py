@@ -127,24 +127,27 @@ def build_model() -> nn.Module:
 # Training / evaluation loops
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, optimizer, criterion, device) -> tuple[float, float]:
+def train_one_epoch(model, loader, optimizer, criterion, device, scaler) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
     correct    = 0
     total      = 0
+    use_amp    = device.type == "cuda"
 
     for images, labels in loader:
         images = images.to(device)
         labels = labels.to(device).unsqueeze(1)   # (B,) → (B, 1) for BCEWithLogitsLoss
 
         optimizer.zero_grad()
-        logits = model(images)
-        loss   = criterion(logits, labels)
-        loss.backward()
-        optimizer.step()
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+            logits = model(images)
+            loss   = criterion(logits, labels)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss.item() * images.size(0)
-        preds       = (torch.sigmoid(logits) > 0.5).float()
+        preds       = (torch.sigmoid(logits.detach().float()) > 0.5).float()
         correct    += (preds == labels).sum().item()
         total      += images.size(0)
 
@@ -157,17 +160,19 @@ def evaluate(model, loader, criterion, device) -> tuple[float, float, float]:
     total_loss = 0.0
     all_preds  = []
     all_labels = []
+    use_amp    = device.type == "cuda"
 
     with torch.no_grad():
         for images, labels in loader:
             images = images.to(device)
             labels = labels.to(device).unsqueeze(1)
 
-            logits = model(images)
-            loss   = criterion(logits, labels)
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+                logits = model(images)
+                loss   = criterion(logits, labels)
             total_loss += loss.item() * images.size(0)
 
-            preds = (torch.sigmoid(logits) > 0.5).float()
+            preds = (torch.sigmoid(logits.float()) > 0.5).float()
             all_preds.extend(preds.cpu().squeeze(1).tolist())
             all_labels.extend(labels.cpu().squeeze(1).tolist())
 
@@ -182,8 +187,9 @@ def evaluate(model, loader, criterion, device) -> tuple[float, float, float]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}\n")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    scaler = torch.amp.GradScaler(enabled=(device.type == "cuda"))
+    print(f"Device: {device}  |  AMP: {device.type == 'cuda'}\n")
 
     # ── Load manifests ────────────────────────────────────────────────────
     train_csv = STAGE2_DATA_DIR / "train" / "train.csv"
@@ -215,9 +221,9 @@ def main() -> None:
     val_ds   = CropDataset(val_csv,   get_val_transform())
 
     train_loader = DataLoader(train_ds, batch_size=STAGE2_BATCH, shuffle=True,
-                              num_workers=4, pin_memory=True)
+                              num_workers=0, pin_memory=True)
     val_loader   = DataLoader(val_ds,   batch_size=STAGE2_BATCH, shuffle=False,
-                              num_workers=4, pin_memory=True)
+                              num_workers=0, pin_memory=True)
 
     # ── Model, loss, optimiser ────────────────────────────────────────────
     model = build_model().to(device)
@@ -239,7 +245,7 @@ def main() -> None:
     best_f1   = -1.0
 
     for epoch in range(1, STAGE2_EPOCHS + 1):
-        tr_loss, tr_acc           = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        tr_loss, tr_acc           = train_one_epoch(model, train_loader, optimizer, criterion, device, scaler)
         val_loss, val_acc, val_f1 = evaluate(model, val_loader, criterion, device)
         scheduler.step(val_loss)
 

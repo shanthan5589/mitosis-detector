@@ -28,9 +28,55 @@ Classes 5 and 6 were defined in the annotation schema but no cells of those clas
 
 ## Why Two Stages?
 
-The first version of this project used a single ResNet-18 classifier trained on 64×64 patches extracted from the slides. Despite trying many regularization techniques, architectures, and training strategies, the best validation F1 achieved was ~0.41. The root cause was domain shift — staining appearance varied significantly across slides, and a single classifier could not generalize across that gap.
+### The single-stage experiment
 
-The techniques attempted that did not work:
+The first version of this project built a complete patch-based detection pipeline from scratch.
+
+**Data extraction:** Each DICOM whole-slide image is a tiled file — not a regular image. A single slide can be several gigabytes. The pipeline streamed through all 21 training slides tile by tile using `iter_pixels`, mapping each annotation's slide-level (x, y) coordinates to its tile index, and extracting a 64×64 patch centered on each annotated cell. Zero-padding was applied for patches near tile edges. Data was extracted locally on an RTX 3050.
+
+**EDA and patch cleaning:** 1,000 patches per class were sampled to assess quality. Two problems were found — excessive black padding from tile edges, and near-blank tissue patches with almost no cell content:
+
+| Class | Black padding >10% | Plain (intensity >220) |
+|-------|-------------------|------------------------|
+| Granulocyte | 18.2% | 46.1% |
+| Mitotic figure | 17.7% | 27.6% |
+| Tumor cell | 19.4% | 31.1% |
+| Ambiguous | 19.1% | 37.1% |
+| Mitotic figure lookalike | 19.0% | 27.7% |
+
+Both filters were applied to all 146,230 patches:
+
+| Class | Total | Clean | Dropped |
+|-------|-------|-------|---------|
+| Granulocyte (1) | 35,331 | 13,611 | 21,720 |
+| Mitotic figure (2) | 21,036 | 11,954 | 9,082 |
+| Tumor cell (3) | 45,178 | 21,995 | 23,183 |
+| Ambiguous (4) | 41,656 | 18,127 | 23,529 |
+| Mitotic figure lookalike (7) | 3,029 | 1,640 | 1,389 |
+| **Total** | **146,230** | **67,327** | **78,903** |
+
+54% of patches were dropped. Class 4 (ambiguous) was also excluded from training — it is unknown whether these cells are mitotic or not, so including them would add unreliable labels. Final training data: 49,200 patches (11,954 mitotic, 37,246 non-mitotic), class imbalance 3.1:1.
+
+**Slide-level splits:** Patches were not split randomly. If patches from the same slide appear in both train and val, the model memorizes slide-specific staining and gets rewarded for it during validation — that is memorization, not generalization. All patches from a given slide go entirely into one set. Slide 23 (zero mitotic cells) was deliberately placed in val — a model that genuinely learned mitosis morphology should produce very few false positives on it.
+
+**Model architecture:** ResNet-18 pretrained on ImageNet, with the final fully connected layer replaced for binary classification. Each 64×64 patch was resized to 224×224 before being fed into the network.
+
+| Setting | Value |
+|---------|-------|
+| Model | ResNet-18 (ImageNet pretrained) |
+| Input size | 224×224 (resized from 64×64) |
+| Optimizer | Adam, lr=1e-4 |
+| Loss | BCEWithLogitsLoss, pos_weight=3.12 |
+| LR scheduler | ReduceLROnPlateau, mode=max, factor=0.5, patience=2 (stepping on F1) |
+| Decision threshold | 0.51 |
+
+Fine-tuned on Kaggle using NVIDIA T4 GPUs.
+
+**Result:** The model consistently overfit — training loss decreased while validation loss diverged. This pattern held across all variants tried:
+
+![Single-stage overfitting pattern](assets/loss_curve.png)
+
+Techniques attempted that did not work:
 - Weighted Random Sampler
 - pos_weight in BCEWithLogitsLoss
 - Freezing all layers except the FC layer
@@ -42,13 +88,17 @@ The techniques attempted that did not work:
 - ResNet-50
 - EfficientNet-B0
 
-The core problem was that the single-stage model was trained on all extracted patches — it saw easy negatives (plain tissue, granulocytes) and never learned to distinguish the genuinely hard cases: cells that look like mitoses but aren't.
+Best validation F1 achieved: **~0.410**
 
-The two-stage approach addresses this directly:
+### Why it failed
 
-**Stage 1 (YOLOv8s):** A detector tuned for high recall. Its job is to flag everything that might be a mitotic figure, at the cost of many false positives. Confidence threshold is deliberately set low (0.10).
+The model trained on all extracted patches — plain tissue, granulocytes, tumor cells — which are trivially easy to distinguish from mitotic figures. It never saw the hard cases: cells that look like mitoses but aren't. So it learned a shallow decision boundary that worked on training slides but couldn't generalize to val slides, which had different staining characteristics. This domain shift between training and validation slides meant the model was effectively memorizing slide-specific appearance rather than learning the underlying biology of mitosis.
 
-**Stage 2 (EfficientNet-B2):** A classifier trained exclusively on the hard cases — YOLO's true positives (real mitoses it found), hard negatives (non-mitotic cells that fooled YOLO), and false negatives (mitoses YOLO missed). This forces the classifier to solve the genuinely difficult discrimination problem instead of the easy one.
+### The two-stage fix
+
+**Stage 1 (YOLOv8s):** A detector tuned for high recall. Its job is to flag everything that might be a mitotic figure across the entire slide, at the cost of many false positives. Confidence threshold is deliberately set low (0.10) — we want to miss as few real mitoses as possible.
+
+**Stage 2 (EfficientNet-B2):** A classifier trained exclusively on the hard cases produced by Stage 1 — true positives (real mitoses YOLO found), hard negatives (non-mitotic cells that fooled YOLO), and false negatives (mitoses YOLO missed). This forces the classifier to learn the genuinely difficult discrimination between a real mitotic figure and a convincing lookalike, instead of wasting capacity on easy cases it would never see at inference time.
 
 ---
 
@@ -119,7 +169,7 @@ pd.read_sql("SELECT * FROM Annotations_coordinates", con).to_csv(meta_dir / "Ann
 con.close()
 ```
 
-### 5. Extract YOLO tiles from DICOM slides
+### 5. Extract tiles from DICOM slides
 
 ```bash
 python stage1_yolo/prepare_yolo_data.py
@@ -133,7 +183,7 @@ Outputs tile images and YOLO label files to `yolo_data/images/` and `yolo_data/l
 python stage1_yolo/train_yolo.py
 ```
 
-Trains YOLOv8s for 50 epochs. Best weights saved to `models/yolo/weights/best.pt`.
+Trains YOLOv8s for up to 50 epochs. Best weights saved to `models/yolo/weights/best.pt`.
 
 ### 7. Build Stage 2 training data
 
@@ -183,20 +233,6 @@ Each WSI is a tiled DICOM file. A single slide can be several gigabytes. The ext
 
 This avoids loading entire slides into memory and processes all slides in parallel.
 
-### EDA findings (from the single-stage experiment)
-
-1,000 patches per class were sampled to assess data quality. Two problems were found:
-
-| Class | Black padding >10% | Plain (intensity >220) |
-|-------|-------------------|------------------------|
-| Granulocyte | 18.2% | 46.1% |
-| Mitotic figure | 17.7% | 27.6% |
-| Tumor cell | 19.4% | 31.1% |
-| Ambiguous | 19.1% | 37.1% |
-| Mitotic figure lookalike | 19.0% | 27.7% |
-
-54% of patches were garbage and had to be filtered before training. It also surfaced class 7 (mitotic figure lookalikes) as a particularly relevant class — cells that visually resemble mitoses but are not, making them natural hard negatives for a classifier.
-
 ### Slide-level splits
 
 Tiles were not split randomly. If tiles from the same slide appear in both train and val, the model memorizes slide-specific staining and gets rewarded for it — that is not generalization.
@@ -245,7 +281,6 @@ Slide 23 (zero mitotic cells) was deliberately placed in val. A model that has g
 | Model | YOLOv8s |
 | Input size | 640×640 |
 | Epochs | 50 |
-| Batch | 16 |
 | Confidence threshold (inference) | 0.10 (intentionally low — maximize recall) |
 | Augmentation | Horizontal/vertical flip, 90° rotation, HSV jitter. Mosaic, mixup, copy-paste disabled (distort cell morphology) |
 
@@ -257,7 +292,6 @@ Slide 23 (zero mitotic cells) was deliberately placed in val. A model that has g
 | Head | Linear(1408 → 1) replacing default classifier |
 | Crop size | 96×96 (input to model: 224×224 after resize) |
 | Epochs | 30 |
-| Batch | 64 |
 | Learning rate | 1e-4 (Adam) |
 | LR scheduler | ReduceLROnPlateau, factor=0.5, patience=3 |
 | Loss | BCEWithLogitsLoss with pos_weight (computed from class ratio) |
@@ -275,17 +309,19 @@ Slide 23 (zero mitotic cells) was deliberately placed in val. A model that has g
 
 ## Results
 
-| | Precision | Recall | F1 | mAP50 |
-|---|---|---|---|---|
-| Stage 1 YOLO (val) | _(to be filled)_ | _(to be filled)_ | — | _(to be filled)_ |
-| Full pipeline (val) | _(to be filled)_ | _(to be filled)_ | _(to be filled)_ | — |
-| Full pipeline (test) | _(to be filled)_ | _(to be filled)_ | _(to be filled)_ | — |
+| | Precision | Recall | F1 |
+|---|---|---|---|
+| Full pipeline (val) | 0.698 | 0.805 | 0.748 |
+| Full pipeline (test) | 0.770 | 0.778 | 0.774 |
+
+![YOLOv8s training curves](assets/yolo_curves.png)
+![EfficientNet-B2 training curves](assets/stage2_curves.png)
 
 ---
 
 ## Key Learnings
 
-- **A single classifier cannot solve this problem.** The domain gap between slides (staining variation) is too large for a patch classifier to generalize across. The max F1 achievable with a single ResNet-18/50 or EfficientNet-B0 was ~0.41 across all attempted training strategies.
+- **A single classifier cannot solve this problem.** The domain gap between slides (staining variation) is too large for a patch classifier to generalize across. The max F1 achievable with a single ResNet-18/50 or EfficientNet-B0 was ~0.410 across all attempted training strategies.
 
 - **Hard negative mining is the right fix.** Training Stage 2 only on cases that fooled YOLO — rather than random non-mitotic patches — directly targets the failure mode. The model is forced to learn the genuinely hard discrimination.
 

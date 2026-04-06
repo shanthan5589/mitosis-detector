@@ -53,6 +53,7 @@ from pathlib import Path
 
 import numpy as np
 import cv2
+import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
@@ -273,6 +274,7 @@ def main() -> None:
 
     print(f"Loading YOLO weights from {weights_path}\n")
     yolo_model = YOLO(str(weights_path))
+    yolo_model.to("cuda:0" if torch.cuda.is_available() else "cpu")
 
     process_split("train", yolo_model)
     process_split("val",   yolo_model)

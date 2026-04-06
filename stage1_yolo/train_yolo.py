@@ -53,7 +53,7 @@ except ImportError:
 
 def main() -> None:
 
-    device = 1 if torch.cuda.is_available() else "cpu"
+    device = 0 if torch.cuda.is_available() else "cpu"
 
     data_yaml = YOLO_DATA_DIR / "data.yaml"
     if not data_yaml.exists():
@@ -95,6 +95,9 @@ def main() -> None:
         # No mixup or copy-paste — they distort cell morphology
         mixup=0.0,
         copy_paste=0.0,
+
+        # Use automatic mixed precision (FP16) for faster training on CUDA
+        amp=True,
 
         # Save best model based on mAP50
         save=True,
