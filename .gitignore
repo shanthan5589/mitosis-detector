@@ -11,6 +11,8 @@ models/yolo/*
 models/yolo/weights/*
 !models/yolo/weights/best.pt
 
+stage1_yolo/*.pt
+
 stage2_data/
 
 yolo_data/
