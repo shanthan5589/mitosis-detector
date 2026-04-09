@@ -231,26 +231,21 @@ The scripts expect these CSV files to exist:
 - `meta_data/Annotations.csv`
 - `meta_data/Annotations_coordinates.csv`
 
-If your download contains SQLite databases instead of CSV files, extract CSVs first.
+If the dataset contains SQLite files instead of CSV metadata, generate the CSVs with:
 
-For training data (example):
-
-```python
-import sqlite3, pandas as pd
-from pathlib import Path
-
-db_path = Path("path/to/MITOS_WSI_CCMCT_ODAEL_train_dcm.sqlite")
-meta_dir = Path("path/to/training_data/meta_data")
-meta_dir.mkdir(parents=True, exist_ok=True)
-
-con = sqlite3.connect(db_path)
-pd.read_sql("SELECT * FROM Slides", con).to_csv(meta_dir / "Slides.csv", index=False)
-pd.read_sql("SELECT * FROM Annotations", con).to_csv(meta_dir / "Annotations.csv", index=False)
-pd.read_sql("SELECT * FROM Annotations_coordinates", con).to_csv(meta_dir / "Annotations_coordinates.csv", index=False)
-con.close()
+```bash
+python setup_data.py --split train
+python setup_data.py --split test
 ```
 
-Do the same for test data if needed (same SQL queries, using the test SQLite path and test `meta_data` directory).
+`setup_data.py` auto-detects a single `.sqlite` file in `TRAIN_DATA_DIR` or `TEST_DATA_DIR`, and writes required CSV files to each split's `meta_data/` folder.
+
+If a split contains multiple `.sqlite` files, specify one explicitly:
+
+```bash
+python setup_data.py --split train --db-path "D:/path/to/train.sqlite"
+python setup_data.py --split test --db-path "D:/path/to/test.sqlite"
+```
 
 Validation check before proceeding:
 - `TRAIN_DATA_DIR` exists and contains DICOM files + `meta_data/*.csv`

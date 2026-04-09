@@ -1,8 +1,8 @@
 torch>=2.0
 torchvision>=0.15
-numpy
+numpy<2
 pandas
-opencv-python
+opencv-python<4.11
 scikit-learn
 matplotlib
 pydicom

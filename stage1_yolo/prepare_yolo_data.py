@@ -54,6 +54,7 @@ from config import (
     BOX_SIZE,
     MITOTIC_CLASS,
     MAX_BG_TILES_PER_SLIDE,
+    PREPARE_WORKERS,
 )
 
 
@@ -184,7 +185,7 @@ def prepare_split(split_name: str, slide_ids: list,
         slide_df = df[df["slide_x"] == slide_id]
         args_list.append((slide_id, img_dir, lbl_dir, slide_df, dcm_path))
 
-    n_workers = min(len(args_list), cpu_count())
+    n_workers = max(1, min(len(args_list), cpu_count(), PREPARE_WORKERS))
     print(f"  [{split_name}] {len(args_list)} slides, {n_workers} workers\n")
 
     total_images = total_mitotic = 0

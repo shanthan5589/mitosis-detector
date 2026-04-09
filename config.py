@@ -34,6 +34,10 @@ BOX_SIZE = 64
 # These teach YOLO what "no mitosis" looks like.
 MAX_BG_TILES_PER_SLIDE = 30
 
+# Max worker processes for Stage 1 data preparation.
+# Lower values reduce memory pressure on machines with limited RAM.
+PREPARE_WORKERS = 4
+
 # Annotation class IDs (from the dataset's Classes table)
 MITOTIC_CLASS = 2  # the only positive class
 
