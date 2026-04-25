@@ -36,7 +36,7 @@ Classes 5 and 6 were defined in the annotation schema but no cells of those clas
 
 ## Method Development
 
-### Stage 0: Single-Stage Baseline
+### First Approach: Single-Stage Pipeline
 
 The initial baseline treated the task as binary patch classification:
 "Given a 64×64 patch centered on an annotated cell, is it mitotic or not?"
@@ -144,7 +144,7 @@ The model trained on many trivial negatives (plain tissue, granulocytes, tumor c
 
 It did not prioritize hard negatives: cells that closely resemble mitosis but are non-mitotic. As a result, the model learned slide-specific appearance patterns that performed on training slides but degraded on validation slides with different staining characteristics.
 
-### Stage 1-2: Two-Stage Pipeline
+### Second Approach: Two-Stage Pipeline
 
 **Stage 1 (YOLOv8s):** A detector tuned for high recall.  
 Its objective is to flag all plausible mitotic candidates across the full slide, while accepting higher false-positive volume. The confidence threshold is intentionally low (`0.10`) to minimize missed mitoses.
