@@ -14,6 +14,8 @@ Mitotic figure counting is essential for tumor grading in histopathology, yet it
 
 This project solves the problem with a carefully designed two-stage approach that prioritizes both sensitivity and precision while rigorously preventing data leakage through slide-level splits.
 
+The complete pipeline has been deployed as a REST API using FastAPI, containerized with Docker, and hosted on AWS EC2, exposing precise mitotic coordinate predictions through a live public endpoint for automated pathology workflows.
+
 ## Key Results
 
 | Split | Precision | Recall | F1    |
