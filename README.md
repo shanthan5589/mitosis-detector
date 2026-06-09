@@ -194,9 +194,9 @@ This focuses model capacity exactly where it matters: distinguishing real mitoti
 | **F1**     | 0.7476     | **0.7738**       |
 
 ### Training Curves
-- YOLOv8s training: `assets/yolo_curves.png`
-- EfficientNet-B2 training: `assets/stage2_curves.png`
-- Single-stage overfitting example: `assets/loss_curve.png`
+![YOLOv8s training curves](assets/yolo_curves.png)
+![EfficientNet-B2 training curves](assets/stage2_curves.png)
+![Single-stage overfitting pattern](assets/loss_curve.png)
 
 ## Key Learnings
 
