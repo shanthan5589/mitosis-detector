@@ -1,11 +1,12 @@
 import cv2
 import numpy as np
+
 import torch
 import torch.nn as nn
-from pathlib import Path
-from PIL import Image
 from torchvision import models, transforms
 from torchvision.ops import nms
+
+from PIL import Image
 
 from config import MODELS_DIR, YOLO_CONF_THRESH, STAGE2_CROP_SIZE, STAGE2_IMG_SIZE, STAGE2_CONF_THRESH
 from stage2_classifier.prepare_stage2_data import extract_crop
@@ -67,6 +68,17 @@ def predict_tile(img_bgr: np.ndarray) -> dict:
 
     # Filter by threshold
     passing = [(box, s) for box, s in zip(candidate_boxes, scores) if s >= STAGE2_CONF_THRESH]
+
+    # Suppress overlapping detections using the same rule as evaluation.
+    if passing:
+        pass_boxes = torch.as_tensor(
+            np.array([box for box, _ in passing]), dtype=torch.float32
+        )
+        pass_scores = torch.tensor(
+            [score for _, score in passing], dtype=torch.float32
+        )
+        keep = nms(pass_boxes, pass_scores, iou_threshold=0.3)
+        passing = [passing[index] for index in keep.tolist()]
 
     if not passing:
         return {"mitotic_count": 0, "detections": []}

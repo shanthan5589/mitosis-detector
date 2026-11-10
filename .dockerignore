@@ -1,0 +1,13 @@
+.claude/
+.ipynb_checkpoints/
+__pycache__/
+stage2_data/
+yolo_data/
+yolo_data.zip
+data/
+data_leak.py
+gpu_check.py
+tempCodeRunnerFile.py
+test_predictions.txt
+.git/
+*.pyc

@@ -1,0 +1,16 @@
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/Feature`)
+3. Commit your changes (`git commit -m 'Add some Feature'`)
+4. Push to the branch (`git push origin feature/Feature`)
+5. Open a Pull Request
+
+## Ways to Help (Great for New Contributors)
+- Improve documentation or add usage examples
+- Add unit tests for data loading or evaluation
+- Experiment with new backbones or augmentation strategies
+- Optimize tile extraction or inference speed
+- Report issues with clear reproduction steps
+
+Please open an issue first if you're unsure where to start. We follow standard GitHub flow and are happy to guide new contributors.

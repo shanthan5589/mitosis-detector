@@ -62,20 +62,14 @@ except ImportError:
     raise ImportError("pip install ultralytics")
 
 
-# ---------------------------------------------------------------------------
 # Normalisation (same as prepare_yolo_data.py)
-# ---------------------------------------------------------------------------
-
 def normalize_tile(frame: np.ndarray) -> np.ndarray:
     if frame.max() > 255:
         frame = (frame - frame.min()) / (frame.max() - frame.min() + 1e-8) * 255
     return frame.astype(np.uint8)
 
 
-# ---------------------------------------------------------------------------
 # Stage 2 model loader
-# ---------------------------------------------------------------------------
-
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 
@@ -116,10 +110,8 @@ def run_stage2(model, crops_bgr: list[np.ndarray], device: torch.device) -> list
     return scores
 
 
-# ---------------------------------------------------------------------------
-# Distance-based matching
-# ---------------------------------------------------------------------------
 
+# Distance-based matching
 def match_detections_to_gt(
     detections: list[tuple[float, float]],   # (slide_x, slide_y)
     gt_points:  list[tuple[float, float]],   # (slide_x, slide_y)
@@ -166,10 +158,7 @@ def match_detections_to_gt(
     return tp, fp, fn
 
 
-# ---------------------------------------------------------------------------
 # Per-slide evaluation
-# ---------------------------------------------------------------------------
-
 def evaluate_slide(
     slide_id: int,
     dcm_path: Path,
@@ -192,7 +181,7 @@ def evaluate_slide(
     tiles = enumerate(iter_pixels(dcm))
 
     while True:
-        # ── Fill a batch of tiles ─────────────────────────────────────────
+        # Fill a batch of tiles
         tile_buffer = []
         for _ in range(YOLO_BATCH):
             try:
@@ -206,7 +195,7 @@ def evaluate_slide(
         if not tile_buffer:
             break
 
-        # ── Stage 1: YOLO (batched) ──────────────────────────────────────
+        # Stage 1: YOLO (batched)
         images = [img for _, img in tile_buffer]
         batch_results = yolo_model(images, conf=YOLO_CONF_THRESH, verbose=False)
 
@@ -219,7 +208,7 @@ def evaluate_slide(
             if not candidate_boxes:
                 continue
 
-            # ── Stage 2: EfficientNet on each candidate crop ─────────────
+            # Stage 2: EfficientNet on each candidate crop
             crops = []
             for box in candidate_boxes:
                 cx = (box[0] + box[2]) / 2
@@ -228,7 +217,7 @@ def evaluate_slide(
 
             scores = run_stage2(stage2_model, crops, device)
 
-            # ── NMS: suppress duplicate boxes around the same mitosis ────
+            # NMS: suppress duplicate boxes around the same mitosis
             passing = [(box, s) for box, s in zip(candidate_boxes, scores)
                        if s >= STAGE2_CONF_THRESH]
             if passing:
@@ -239,7 +228,7 @@ def evaluate_slide(
             candidate_boxes = [b for b, _ in passing]
             scores          = [s for _, s in passing]
 
-            # ── Convert surviving detections to slide coordinates ─────────
+            # Convert surviving detections to slide coordinates
             tile_col    = ti % tiles_per_row
             tile_row    = ti // tiles_per_row
             tile_origin_x = tile_col * tile_w
@@ -252,7 +241,7 @@ def evaluate_slide(
                 slide_y = tile_origin_y + cy_tile
                 all_detections.append((slide_x, slide_y, score))
 
-    # ── Slide-level NMS: suppress cross-tile duplicates at tile boundaries ──
+    # Slide-level NMS: suppress cross-tile duplicates at tile boundaries
     # A mitosis near a tile edge can be detected in two adjacent tiles.
     # Tile-local NMS cannot catch these; one final NMS pass in slide coords can.
     if len(all_detections) > 1:
@@ -265,7 +254,7 @@ def evaluate_slide(
         keep = nms(sl_boxes, sl_scores, iou_threshold=0.3)
         all_detections = [all_detections[i] for i in keep.tolist()]
 
-    # ── Match detections to ground truth ──────────────────────────────────
+    # Match detections to ground truth
     dist_thresh = BOX_SIZE / 2   # 32 pixels by default
     det_points  = [(x, y) for x, y, _ in all_detections]
     tp, fp, fn  = match_detections_to_gt(det_points, gt_points, dist_thresh)
@@ -278,10 +267,8 @@ def evaluate_slide(
     return tp, fp, fn
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
+# Entry point
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -312,7 +299,7 @@ def main() -> None:
     print(f"Device: {device}")
     print(f"Split:  {args.split} ({len(eval_slides)} slides)\n")
 
-    # ── Load models ───────────────────────────────────────────────────────
+    # Load models
     yolo_weights   = MODELS_DIR / "yolo" / "weights" / "best.pt"
     stage2_weights = MODELS_DIR / "stage2_best.pth"
     for p in [yolo_weights, stage2_weights]:
@@ -324,7 +311,7 @@ def main() -> None:
     stage2_model = load_stage2_model(stage2_weights, device)
     print("Both models loaded.\n")
 
-    # ── Load ground-truth annotations ─────────────────────────────────────
+    # Load ground-truth annotations
     meta_dir  = data_dir / "meta_data"
     df_annots = pd.read_csv(meta_dir / "Annotations.csv")
     df_coords = pd.read_csv(meta_dir / "Annotations_coordinates.csv")
@@ -339,7 +326,7 @@ def main() -> None:
         for _, row in df_slides.iterrows()
     }
 
-    # ── Verify all eval slides are resolvable before starting ────────────
+    # Verify all eval slides are resolvable before starting
     missing = [
         slide_id for slide_id in eval_slides
         if slide_to_path.get(slide_id) is None or not slide_to_path[slide_id].exists()
@@ -350,7 +337,7 @@ def main() -> None:
             "Fix the DICOM paths or update eval_slides in config.py."
         )
 
-    # ── Evaluate each slide ───────────────────────────────────────────────
+    # Evaluate each slide
     total_tp = total_fp = total_fn = 0
 
     if args.split == "test":
@@ -376,7 +363,7 @@ def main() -> None:
         f1   = 2 * prec * rec / (prec + rec + 1e-8)
         print(f"  Slide {slide_id}: TP={tp} FP={fp} FN={fn} → P={prec:.3f} R={rec:.3f} F1={f1:.3f}")
 
-    # ── Overall metrics ───────────────────────────────────────────────────
+    # Overall metrics
     precision = total_tp / (total_tp + total_fp + 1e-8)
     recall    = total_tp / (total_tp + total_fn + 1e-8)
     f1        = 2 * precision * recall / (precision + recall + 1e-8)

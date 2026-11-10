@@ -77,7 +77,7 @@ def main() -> None:
         name="yolo",
         exist_ok=True,          # overwrite previous run if re-running
 
-        # ── Augmentation tweaks for histology tiles ───────────────────────
+        # Augmentation tweaks for histology tiles
         # Mosaic stitches 4 random images together — bad for tissue slides
         # because it creates unnatural tissue boundaries.
         mosaic=0.0,

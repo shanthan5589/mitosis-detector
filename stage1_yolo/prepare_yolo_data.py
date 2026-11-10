@@ -58,9 +58,7 @@ from config import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def normalize_tile(frame: np.ndarray) -> np.ndarray:
     if frame.max() > 255:
@@ -78,9 +76,7 @@ def compute_yolo_box(coord_x, coord_y, tile_w, tile_h, box_size):
     return cx, cy, bw, bh
 
 
-# ---------------------------------------------------------------------------
 # Per-slide worker (runs in its own process)
-# ---------------------------------------------------------------------------
 
 def process_one_slide(args):
     slide_id, img_dir, lbl_dir, slide_df, dcm_path = args
@@ -95,6 +91,8 @@ def process_one_slide(args):
     slide_w       = int(dcm.TotalPixelMatrixColumns)
     slide_h       = int(dcm.TotalPixelMatrixRows)
     tiles_per_row = math.ceil(slide_w / tile_w)
+    grid_tile_count = tiles_per_row * math.ceil(slide_h / tile_h)
+    frame_count = int(getattr(dcm, "NumberOfFrames", grid_tile_count))
 
     slide_df = slide_df.copy()
     slide_df["coordinateX"] = slide_df["coordinateX"].astype(int)
@@ -109,8 +107,7 @@ def process_one_slide(args):
     slide_df["tile_index"] = slide_df["tile_row"] * tiles_per_row + slide_df["tile_col"]
 
     annotated_set     = set(slide_df["tile_index"].unique())
-    max_annotated_idx = max(annotated_set) if annotated_set else 0
-    bg_pool           = [i for i in range(max_annotated_idx) if i not in annotated_set]
+    bg_pool           = [i for i in range(frame_count) if i not in annotated_set]
     bg_sample         = set(random.sample(bg_pool, min(MAX_BG_TILES_PER_SLIDE, len(bg_pool))))
 
     target_tiles   = sorted(annotated_set | bg_sample)
@@ -150,9 +147,7 @@ def process_one_slide(args):
     return slide_id, len(annotated_set), len(bg_sample), n_images, n_mitotic
 
 
-# ---------------------------------------------------------------------------
 # Per-split processing
-# ---------------------------------------------------------------------------
 
 def prepare_split(split_name: str, slide_ids: list,
                   img_dir: Path, lbl_dir: Path) -> None:
@@ -198,9 +193,7 @@ def prepare_split(split_name: str, slide_ids: list,
     print(f"\n  {split_name} total: {total_images} images, {total_mitotic} mitotic boxes\n")
 
 
-# ---------------------------------------------------------------------------
 # data.yaml
-# ---------------------------------------------------------------------------
 
 def write_data_yaml() -> None:
     data = {
@@ -217,9 +210,7 @@ def write_data_yaml() -> None:
     print(f"data.yaml written → {yaml_path}")
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     print(f"CPU cores available: {cpu_count()}")

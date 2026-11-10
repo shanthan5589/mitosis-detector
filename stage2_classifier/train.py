@@ -54,9 +54,7 @@ from config import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Dataset
-# ---------------------------------------------------------------------------
 
 class CropDataset(Dataset):
     """
@@ -80,9 +78,7 @@ class CropDataset(Dataset):
         return img, label
 
 
-# ---------------------------------------------------------------------------
 # Transforms
-# ---------------------------------------------------------------------------
 
 # ImageNet mean/std — EfficientNet was pretrained with these
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -108,9 +104,7 @@ def get_val_transform():
     ])
 
 
-# ---------------------------------------------------------------------------
 # Model
-# ---------------------------------------------------------------------------
 
 def build_model() -> nn.Module:
     """
@@ -123,9 +117,7 @@ def build_model() -> nn.Module:
     return model
 
 
-# ---------------------------------------------------------------------------
 # Training / evaluation loops
-# ---------------------------------------------------------------------------
 
 def train_one_epoch(model, loader, optimizer, criterion, device, scaler) -> tuple[float, float]:
     model.train()
@@ -182,16 +174,14 @@ def evaluate(model, loader, criterion, device) -> tuple[float, float, float]:
     return val_loss, val_acc, val_f1
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     scaler = torch.amp.GradScaler(enabled=(device.type == "cuda"))
     print(f"Device: {device}  |  AMP: {device.type == 'cuda'}\n")
 
-    # ── Load manifests ────────────────────────────────────────────────────
+    # Load manifests
     train_csv = STAGE2_DATA_DIR / "train" / "train.csv"
     val_csv   = STAGE2_DATA_DIR / "val"   / "val.csv"
     for p in [train_csv, val_csv]:
@@ -216,7 +206,7 @@ def main() -> None:
     print(f"Train: {n_pos} mitotic  |  {n_neg} non-mitotic")
     print(f"Val:   {(val_df['label']==1).sum()} mitotic  |  {(val_df['label']==0).sum()} non-mitotic\n")
 
-    # ── Datasets and loaders ──────────────────────────────────────────────
+    # Datasets and loaders
     train_ds = CropDataset(train_csv, get_train_transform())
     val_ds   = CropDataset(val_csv,   get_val_transform())
 
@@ -225,7 +215,7 @@ def main() -> None:
     val_loader   = DataLoader(val_ds,   batch_size=STAGE2_BATCH, shuffle=False,
                               num_workers=0, pin_memory=True)
 
-    # ── Model, loss, optimiser ────────────────────────────────────────────
+    # Model, loss, optimiser
     model = build_model().to(device)
 
     # pos_weight compensates for class imbalance.
@@ -239,7 +229,7 @@ def main() -> None:
         optimizer, mode="min", factor=0.5, patience=3
     )
 
-    # ── Training loop ─────────────────────────────────────────────────────
+    # Training loop
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     best_path = MODELS_DIR / "stage2_best.pth"
     best_f1   = -1.0

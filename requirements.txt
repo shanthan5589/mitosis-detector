@@ -1,9 +1,13 @@
-torch>=2.0
-torchvision>=0.15
 numpy<2
 pandas
 opencv-python<4.11
 scikit-learn
-matplotlib
 pydicom
+PyYAML
+torch
+torchvision
 ultralytics
+Pillow
+fastapi
+uvicorn
+python-multipart

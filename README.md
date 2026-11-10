@@ -1,20 +1,22 @@
 # Mitosis Detector
 
-**High-Precision Mitotic Figure Detection in Gigapixel Whole-Slide Pathology Images**
+**Mitotic Figure Detection in Gigapixel Whole-Slide Pathology Images**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![YOLOv8](https://img.shields.io/badge/YOLOv8-Ultralytics-00b300.svg)](https://docs.ultralytics.com/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg)](https://pytorch.org/)
 
-A robust two-stage deep learning pipeline that first maximizes recall with YOLOv8s, then refines predictions using an EfficientNet-B2 classifier trained on hard negatives. Achieves **F1 = 0.7738** on 11 fully held-out test slides with significant staining variation.
+A robust two-stage deep learning pipeline that uses YOLOv8s at a low confidence threshold to favor recall, then refines predictions using an EfficientNet-B2 classifier trained on true positives, false positives and false negatives. The system achieves **F1 = 0.7738** on 11 fully held-out test slides with significant staining variation.
+
+Note that stage-2 cannot recover when stage-1 misses a mitotic figure.
 
 ## Why This Matters
 
-Mitotic figure counting is essential for tumor grading in histopathology, yet it remains a manual, time-consuming, and subjective task for pathologists. Whole-slide images (WSIs) are gigabytes in size and contain tens of thousands of cells. Staining variations across slides make generalization extremely difficult for conventional models.
+Mitotic figure counting is essential for tumor grading in histopathology, yet it remains a manual, time-consuming, and subjective task for pathologists. Whole-slide images (WSIs) are gigabytes in size and contain very large numbers of cells. Staining variations across slides make generalization extremely difficult for conventional models.
 
-This project solves the problem with a carefully designed two-stage approach that prioritizes both sensitivity and precision while rigorously preventing data leakage through slide-level splits.
+This project addresses the problem with a carefully designed two-stage approach that prioritizes both precision and recall.
 
-The complete pipeline has been deployed as a REST API using FastAPI, containerized with Docker, and hosted on AWS EC2, exposing precise mitotic coordinate predictions through a live public endpoint for automated pathology workflows.
+The repository includes a Dockerized FastAPI endpoint for tile-level inference. It accepts a pathology image tile and returns image-relative coordinates for detected mitotic candidates.
 
 ## Key Results
 
@@ -23,30 +25,14 @@ The complete pipeline has been deployed as a REST API using FastAPI, containeriz
 | Validation | 0.6981    | 0.8047 | 0.7476 |
 | **Test (held-out)** | **0.7700**    | **0.7776** | **0.7738** |
 
-The model generalizes across domain shifts where single-stage classifiers typically fail due to visually similar lookalikes (granulocytes, tumor cells, mitotic figure lookalikes).
-
 ---
 
 ## Features
 
-- **Two-stage architecture**: High-recall YOLOv8s detector followed by precision-focused EfficientNet-B2 classifier trained exclusively on hard cases
-- **Robust to domain shift**: Maintains high performance across slides with different staining protocols
-- **Efficient large-image handling**: Streams gigabyte-scale DICOM whole-slide images tile-by-tile without loading entire slides into memory
-- **Leakage-free evaluation**: Strict slide-level train/validation/test splits prevent the model from memorizing slide-specific artifacts
-- **Hard negative mining**: Stage 2 is trained only on true mitoses and the most confusing false positives — dramatically improving the decision boundary
-- **Reproducible end-to-end pipeline**: From raw DICOM to final mitotic coordinates with clear checkpoints and evaluation scripts
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Project Structure](#project-structure)
-- [How It Works](#how-it-works)
-- [Results](#results)
-- [Key Learnings](#key-learnings)
-- [Contributing](#contributing)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
+- **Two-stage architecture**: A low-threshold YOLOv8s detector generates candidate mitoses, and an EfficientNet-B2 classifier filters out likely false positives.
+- **Efficient large-image handling**: Streams gigabyte-scale DICOM whole-slide images tile-by-tile without loading entire slides into memory.
+- **Stage 2 training**: Stage 2 is trained on true positives, false positives and false negatives, helping dramatically improve the decision boundary.
+- **Reproducible end-to-end pipeline**: From raw DICOM to final mitotic coordinates with clear checkpoints and evaluation scripts.
 
 ## Installation
 
@@ -156,39 +142,33 @@ mitosis-detector/
 Initial experiments treated mitosis detection as simple binary patch classification (64×64 patches → ResNet-18 / EfficientNet-B0).
 
 **Why it failed**:
-- Models quickly overfit to slide-specific staining patterns
-- Training loss decreased while validation loss diverged
-- Best validation F1 remained stuck around **0.41**
-- The model learned trivial negatives (plain tissue, granulocytes) instead of focusing on hard lookalikes
+- Models quickly overfit to slide-specific staining patterns.
+- Training loss decreased while validation loss diverged.
+- Best validation F1 remained stuck around **0.41**.
+- The model learned trivial negatives (plain tissue, granulocytes) instead of focusing on hard lookalikes.
 
-**Root cause**: Random patch-level splitting allowed information leakage. The model memorized staining characteristics of training slides rather than learning true mitotic morphology.
 
 ### The Solution: Two-Stage Pipeline
 
-**Stage 1 — YOLOv8s Detector (High Recall)**
-- Input: 640×640 tiles extracted from whole-slide DICOM images
-- Confidence threshold deliberately set low (`0.10`) to minimize missed mitoses
-- Accepts higher false positive rate in exchange for near-maximum sensitivity
+**Stage 1 — YOLOv8s Detector (low threshold)**
+- Input: The code extracts native DICOM tiles and YOLO resizes them to 640×640.
+- Confidence threshold deliberately set low (`0.10`) to minimize missed mitoses.
+- Accepts more false positives to reduce the number of missed candidates.
 - Mosaic / mixup augmentation disabled (they distort cell morphology)
 
-**Stage 2 — EfficientNet-B2 Classifier (Precision Refinement)**
-Trained **only** on three types of examples produced by Stage 1:
+**Stage 2 — EfficientNet-B2 Classifier**
+Trained **only** on three types of crops:
 | Crop Type       | Label | Purpose |
 |-----------------|-------|---------|
 | True Positive   | 1     | Real mitoses correctly detected by YOLO |
 | False Negative  | 1     | Real mitoses missed by YOLO |
-| Hard Negative   | 0     | Non-mitotic cells that fooled YOLO |
+| False Positive  | 0     | Non-mitotic cells that fooled YOLO |
 
 This focuses model capacity exactly where it matters: distinguishing real mitotic figures from visually similar impostors.
 
-**Why this works**:
-- Stage 1 casts a wide net across the entire gigapixel slide
-- Stage 2 specializes in the difficult decision boundary
-- Result: strong generalization even when staining characteristics differ between training and test slides
-
 ## Results
 
-### Performance on Held-Out Data
+### Performance on Unseen Data (Test Slides)
 | Metric     | Validation | Test (11 slides) |
 |------------|------------|------------------|
 | Precision  | 0.6981     | 0.7700           |
@@ -202,33 +182,13 @@ This focuses model capacity exactly where it matters: distinguishing real mitoti
 
 ## Key Learnings
 
-- **Hard negative mining is critical** — Training on random negatives is insufficient when the real challenge is visually similar lookalikes.
+- **Training on hard negatives is critical** — Training on random negatives is insufficient when the real challenge is visually similar lookalikes.
 - **Slide-level splits are non-negotiable** in medical imaging. Random splits produce misleadingly high metrics.
-- **Two-stage recall-then-refine** is the right inductive bias for this task.
 - **DICOM streaming** (`iter_pixels`) is essential — loading full WSIs into memory is impractical.
-- **Mosaic augmentation hurts** histology performance by creating artificial boundaries that do not exist in real tissue.
-- **Small input sizes weaken transfer learning** — 64×64 patches lose too much spatial information compared with 96×96 crops (Stage 2) or 640×640 tiles (Stage 1).
+- **Input context matters** — The earlier 64×64 patches contained less surrounding tissue than the 96×96 Stage 2 crops. Stage 1 processes complete native DICOM tiles, which YOLO resizes internally to 640×640.
 
 ## Contributing
-
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. We deeply appreciate any help — whether it's reporting bugs, suggesting improvements, fixing documentation, or contributing code.
-
-### How to Contribute
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-### Ways to Help (Great for New Contributors)
-- Improve documentation or add usage examples
-- Add unit tests for data loading or evaluation
-- Experiment with new backbones or augmentation strategies
-- Optimize tile extraction or inference speed
-- Report issues with clear reproduction steps
-
-Please open an issue first if you're unsure where to start. We follow standard GitHub flow and are happy to guide new contributors.
+Read the [CONTRIBUTING](CONTRIBUTING) file for guidelines on how to contribute to this project.
 
 ## Acknowledgements
 
@@ -245,7 +205,4 @@ Dataset access:
 Special thanks to the pathologists who performed the exhaustive 262,481 expert annotations across 32 whole-slide images.
 
 ## License
-
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details (to be added).
-
----
+This project is released under the [MIT License](LICENSE).

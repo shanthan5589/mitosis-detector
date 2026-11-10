@@ -71,9 +71,7 @@ except ImportError:
     raise ImportError("ultralytics is not installed. Run: pip install ultralytics")
 
 
-# ---------------------------------------------------------------------------
 # Crop helper
-# ---------------------------------------------------------------------------
 
 def extract_crop(image: np.ndarray, cx: float, cy: float, crop_size: int) -> np.ndarray:
     """
@@ -109,9 +107,7 @@ def extract_crop(image: np.ndarray, cx: float, cy: float, crop_size: int) -> np.
     return crop
 
 
-# ---------------------------------------------------------------------------
 # Per-split processing
-# ---------------------------------------------------------------------------
 
 def process_split(split_name: str, yolo_model) -> None:
     img_dir  = YOLO_DATA_DIR  / "images" / split_name
@@ -137,13 +133,13 @@ def process_split(split_name: str, yolo_model) -> None:
     tp_count = fp_count = fn_count = 0
 
     for img_path in image_paths:
-        # ── Load tile image (BGR from OpenCV) ─────────────────────────────
+        # Load tile image (BGR from OpenCV)
         image = cv2.imread(str(img_path))
         if image is None:
             continue
         img_h, img_w = image.shape[:2]
 
-        # ── Load ground-truth YOLO labels (normalized → pixel boxes) ──────
+        # Load ground-truth YOLO labels (normalized → pixel boxes)
         lbl_path = lbl_dir / (img_path.stem + ".txt")
         gt_boxes = []   # list of (x1, y1, x2, y2) in pixels
 
@@ -163,7 +159,7 @@ def process_split(split_name: str, yolo_model) -> None:
                     cy_px + bh_px / 2,
                 ]))
 
-        # ── Run YOLO inference on this tile ───────────────────────────────
+        # Run YOLO inference on this tile
         # verbose=False suppresses per-image console spam
         results   = yolo_model(str(img_path), conf=YOLO_CONF_THRESH, verbose=False)
         det_boxes = []   # list of (x1, y1, x2, y2) in pixels
@@ -174,7 +170,7 @@ def process_split(split_name: str, yolo_model) -> None:
             for box in result.boxes.xyxy.cpu().numpy():
                 det_boxes.append(box[:4])
 
-        # ── Match detections to ground truth using center-distance ───────
+        # Match detections to ground truth using center-distance
         # Uses the same criterion as final evaluation (center distance <= BOX_SIZE/2)
         # so a detection is a TP in training iff it would be a TP at eval time.
         # Global one-to-one assignment: sort all within-threshold pairs by distance
@@ -210,7 +206,7 @@ def process_split(split_name: str, yolo_model) -> None:
                 matched_dets[det_i] = gt_i
                 matched_gts.add(gt_i)
 
-        # ── Write crops for each detection ────────────────────────────────
+        # Write crops for each detection
         for det_i, det_box in enumerate(det_boxes):
             det_cx = det_centers[det_i, 0]
             det_cy = det_centers[det_i, 1]
@@ -236,7 +232,7 @@ def process_split(split_name: str, yolo_model) -> None:
             manifest_rows.append((str(crop_dir / crop_name), label))
             crop_idx += 1
 
-        # ── Save crops for GT boxes YOLO completely missed (False Negatives) ──
+        # Save crops for GT boxes YOLO completely missed (False Negatives)
         for gt_i, gt_box in enumerate(gt_boxes):
             if gt_i in matched_gts:
                 continue   # already captured as a TP above
@@ -250,7 +246,7 @@ def process_split(split_name: str, yolo_model) -> None:
             crop_idx   += 1
             fn_count   += 1
 
-    # ── Write CSV manifest ─────────────────────────────────────────────────
+    # Write CSV manifest
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["path", "label"])
@@ -260,9 +256,7 @@ def process_split(split_name: str, yolo_model) -> None:
     print(f"  [{split_name}] {len(manifest_rows)} crops saved → {csv_path}\n")
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     weights_path = MODELS_DIR / "yolo" / "weights" / "best.pt"
